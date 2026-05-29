@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 export default function Home() {
@@ -9,7 +10,11 @@ export default function Home() {
       <p className="text-muted-foreground">
         Next.js + TypeScript + Tailwind + shadcn/ui + Supabase
       </p>
-      <Button>시작하기</Button>
+      <div className="flex gap-2">
+        <Link href="/dashboard">
+          <Button>대시보드 보기</Button>
+        </Link>
+      </div>
     </main>
   );
 }
