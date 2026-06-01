@@ -61,6 +61,7 @@ export async function saveAttendance(formData: FormData) {
           check_in: asTimeOrNull(formData.get(`check_in_${childId}`)),
           check_out: asTimeOrNull(formData.get(`check_out_${childId}`)),
           reason: asTextOrNull(formData.get(`reason_${childId}`)),
+          note: asTextOrNull(formData.get(`note_${childId}`)),
           recorded_by: recordedBy,
           updated_by: recordedBy,
         };

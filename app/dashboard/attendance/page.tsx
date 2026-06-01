@@ -48,6 +48,7 @@ type AttendanceRow = {
   check_in: string | null;
   check_out: string | null;
   reason: string | null;
+  note: string | null;
 };
 
 const STATUS_OPTIONS: { value: AttendanceStatus; label: string }[] = [
@@ -157,7 +158,7 @@ async function StaffSection({
     supabase.from("staff_classrooms").select("*"),
     supabase
       .from("attendance")
-      .select("id, child_id, classroom_id, date, status, check_in, check_out, reason")
+      .select("id, child_id, classroom_id, date, status, check_in, check_out, reason, note")
       .eq("date", selectedDate),
     supabase.from("profiles").select("*").eq("id", activeUserId).maybeSingle(),
   ]);
@@ -271,9 +272,10 @@ async function StaffSection({
                   <TableHead className="w-[140px]">원아</TableHead>
                   <TableHead className="w-[120px]">반</TableHead>
                   <TableHead className="w-[140px]">상태</TableHead>
-                  <TableHead className="w-[120px]">등원</TableHead>
-                  <TableHead className="w-[120px]">하원</TableHead>
-                  <TableHead>사유/메모</TableHead>
+                  <TableHead className="w-[110px]">등원</TableHead>
+                  <TableHead className="w-[110px]">하원</TableHead>
+                  <TableHead>인정결석 사유</TableHead>
+                  <TableHead>메모</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -326,7 +328,16 @@ async function StaffSection({
                           type="text"
                           name={`reason_${c.id}`}
                           defaultValue={existing?.reason ?? ""}
-                          placeholder="결석/인정 사유, 메모"
+                          placeholder="인정결석 사유"
+                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <input
+                          type="text"
+                          name={`note_${c.id}`}
+                          defaultValue={existing?.note ?? ""}
+                          placeholder="메모"
                           className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         />
                       </TableCell>
@@ -389,7 +400,7 @@ async function ParentSection({
   if (myChildren.length > 0) {
     const { data } = await supabase
       .from("attendance")
-      .select("id, child_id, classroom_id, date, status, check_in, check_out, reason")
+      .select("id, child_id, classroom_id, date, status, check_in, check_out, reason, note")
       .in(
         "child_id",
         myChildren.map((c) => c.id)
@@ -507,14 +518,15 @@ async function ParentSection({
                       <TableHead className="w-[120px]">상태</TableHead>
                       <TableHead className="w-[100px]">등원</TableHead>
                       <TableHead className="w-[100px]">하원</TableHead>
-                      <TableHead>사유/메모</TableHead>
+                      <TableHead>인정결석 사유</TableHead>
+                      <TableHead>메모</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {records.length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={5}
+                          colSpan={6}
                           className="text-center text-sm text-muted-foreground py-8"
                         >
                           이 달의 출결 기록이 없습니다.
@@ -531,6 +543,11 @@ async function ParentSection({
                           <TableCell>{formatTime(r.check_out)}</TableCell>
                           <TableCell className="text-sm">
                             {r.reason ?? (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {r.note ?? (
                               <span className="text-muted-foreground">-</span>
                             )}
                           </TableCell>
