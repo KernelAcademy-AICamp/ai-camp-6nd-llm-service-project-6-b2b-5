@@ -6,6 +6,7 @@ import {
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
 import { ObservationForm, type ChildOption } from "./_form";
+import { ObservationTabs } from "../_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,7 @@ export default async function NewObservationPage({
       <div className="flex justify-end">
         <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
       </div>
+      <ObservationTabs active="writing" qs={qs} />
       <ObservationForm
         childOptions={children}
         qs={qs}

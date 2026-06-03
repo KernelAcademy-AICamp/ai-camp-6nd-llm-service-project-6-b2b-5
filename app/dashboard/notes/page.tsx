@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { MessageSquare, FileText, ChevronRight } from "lucide-react";
+import { MessageSquare, FileText } from "lucide-react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   DEFAULT_TEACHER_ID,
@@ -8,6 +7,7 @@ import {
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
 import { Badge } from "@/components/ui/badge";
+import { NotesTabs } from "./_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -78,17 +78,10 @@ export default async function NotesPage({
             우리 반 알림장
           </h1>
         </div>
-        <div className="flex items-center gap-2">
-          <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
-          <Link
-            href={`/dashboard/notes/drafts${qs}`}
-            className="flex h-9 items-center gap-1.5 rounded-lg bg-emerald-50 px-3 text-sm font-medium text-emerald-700 ring-1 ring-emerald-100 hover:bg-emerald-100"
-          >
-            임시보관함 {draftCount > 0 && `(${draftCount})`}
-            <ChevronRight className="h-4 w-4" />
-          </Link>
-        </div>
+        <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
       </section>
+
+      <NotesTabs active="sent" qs={qs} />
 
       <section className="grid grid-cols-2 gap-3">
         <Stat label="발행됨" value={publishedCount} tone="emerald" />

@@ -7,6 +7,7 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
+import { ObservationTabs } from "./_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,8 @@ export default async function ObservationsPage({
           </Link>
         </div>
       </section>
+
+      <ObservationTabs active="done" qs={qs} />
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         {journals.length === 0 ? (
