@@ -104,9 +104,7 @@ export async function generateObservationDraftAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2400,
-      thinking: { type: "adaptive" },
       output_config: {
-        effort: "medium",
         format: { type: "json_schema", schema: OBSERVATION_SCHEMA },
       },
       system: [
@@ -155,8 +153,6 @@ export async function refineObservationAreaAction(args: {
     const stream = client.messages.stream({
       model: MODEL,
       max_tokens: 600,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "low" },
       system: [
         { type: "text", text: REFINE_AREA_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       ],
