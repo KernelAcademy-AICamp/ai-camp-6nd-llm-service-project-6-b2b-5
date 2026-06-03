@@ -187,6 +187,8 @@ export function ActivityRecordForm({
   const [savedOnce, setSavedOnce] = useState(false);
   // 페이지 이탈 경고 (미저장 변경 시)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
+  // 분류 팝업 중앙 드롭존 하이라이트
+  const [centerDropActive, setCenterDropActive] = useState(false);
   // 저장 검증 — DB에서 다시 불러온 원아별 사진(서명 URL)
   const [savedPhotosByChild, setSavedPhotosByChild] = useState<
     Record<string, string[]>
@@ -426,6 +428,18 @@ export function ActivityRecordForm({
     markDirty();
   }
 
+  /** 업로드한 사진 전체 삭제 (분석·분류 포함 초기화) */
+  function clearAllPhotos() {
+    setImages([]);
+    setSelectedPhotoIds(new Set());
+    setPhotoAssignments({});
+    setPhotoActivityTags({});
+    setDraftAssignments({});
+    setDraftTags({});
+    setAnalysis(null);
+    markDirty();
+  }
+
   function togglePhotoSelection(id: string) {
     setSelectedPhotoIds((prev) => {
       const next = new Set(prev);
@@ -444,6 +458,15 @@ export function ActivityRecordForm({
       else next[photoId] = childId;
       return next;
     });
+  }
+
+  /** (draft) 드래그앤드롭으로 선택 원아에게 사진 배정 (해제 아님) */
+  function handleCenterDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setCenterDropActive(false);
+    const photoId = e.dataTransfer.getData("text/plain");
+    if (!photoId || !selectedChild) return;
+    setDraftAssignments((prev) => ({ ...prev, [photoId]: selectedChild.id }));
   }
 
   /** 분류 팝업 작업본 사진별 활동 태그 설정 (draft) */
@@ -834,7 +857,7 @@ export function ActivityRecordForm({
                   ? "이미지 변환 중…"
                   : dragOver
                     ? "여기에 놓으면 업로드됩니다"
-                    : "사진을 클릭하거나 끌어다 놓아 업로드 (여러 장 가능)"}
+                    : `사진을 클릭하거나 끌어다 놓아 업로드 (최대 ${MAX_PHOTOS}장)`}
               </p>
               <p className="text-[11px] text-slate-400">{ALLOWED_EXT_LABEL} 형식</p>
             </button>
@@ -881,6 +904,13 @@ export function ActivityRecordForm({
                     {selectedPhotoIds.size === images.length
                       ? "전체 해제"
                       : "전체 선택"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAllPhotos}
+                    className="text-[11px] font-medium text-rose-600 underline hover:text-rose-700"
+                  >
+                    전체 삭제
                   </button>
                 </div>
               </div>
@@ -1236,14 +1266,26 @@ export function ActivityRecordForm({
                   </button>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div
+                  className={cn(
+                    "min-h-0 flex-1 overflow-y-auto p-3 transition-colors",
+                    centerDropActive && "bg-emerald-50 ring-2 ring-inset ring-emerald-300",
+                  )}
+                  onDragOver={(e) => {
+                    if (!selectedChild) return;
+                    e.preventDefault();
+                    setCenterDropActive(true);
+                  }}
+                  onDragLeave={() => setCenterDropActive(false)}
+                  onDrop={handleCenterDrop}
+                >
                   {!selectedChild ? (
                     <p className="rounded-xl bg-slate-50 py-10 text-center text-sm text-slate-400">
                       등록된 원아가 없어요.
                     </p>
                   ) : draftPhotosForChild(selectedChild.id).length === 0 ? (
                     <p className="rounded-xl bg-slate-50 py-10 text-center text-xs text-slate-400">
-                      오른쪽 “전체 사진”에서 사진을 눌러
+                      오른쪽 “전체 사진”에서 사진을 끌어다 놓거나 눌러
                       <br />
                       <strong className="text-slate-600">
                         {selectedChild.name}
@@ -1739,11 +1781,16 @@ function RightPaneThumb({
   return (
     <button
       type="button"
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", photo.id);
+        e.dataTransfer.effectAllowed = "copy";
+      }}
       onClick={onClick}
       title={
         childName
           ? `${childName}에게 배정됨`
-          : "클릭하면 선택한 원아에게 배정"
+          : "끌어다 놓거나 클릭하면 선택한 원아에게 배정"
       }
       className={cn(
         "relative block aspect-square w-full overflow-hidden rounded-lg ring-1 transition-all",
