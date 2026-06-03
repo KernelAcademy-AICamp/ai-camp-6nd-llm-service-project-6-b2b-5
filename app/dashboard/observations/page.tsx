@@ -7,7 +7,6 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
-import { ObservationTabs } from "./_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +50,7 @@ export default async function ObservationsPage({
   const qs = `?${params.toString()}`;
 
   return (
-    <main className="container mx-auto py-10 space-y-10">
+    <main className="container mx-auto pt-10 pb-24 space-y-10">
       <section className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-xs text-slate-400">또랑 · 관찰일지</p>
@@ -74,8 +73,6 @@ export default async function ObservationsPage({
           </Link>
         </div>
       </section>
-
-      <ObservationTabs active="done" qs={qs} />
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         {journals.length === 0 ? (

@@ -191,7 +191,7 @@ export function NoteForm({
 
       <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4">
         {/* 좌측 필터 */}
-        <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
+        <section className="flex flex-col space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
           {/* 아이 선택 */}
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
@@ -277,7 +277,7 @@ export function NoteForm({
             onClick={generate}
             disabled={isPending}
             className={cn(
-              "mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
+              "!mt-auto flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
               isPending
                 ? "bg-emerald-300 text-white"
                 : "bg-emerald-600 text-white hover:bg-emerald-700",

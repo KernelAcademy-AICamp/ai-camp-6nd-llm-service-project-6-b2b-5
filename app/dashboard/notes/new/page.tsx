@@ -37,8 +37,8 @@ export default async function NewNotePage({
   const qs = `?${params.toString()}`;
 
   return (
-    <main className="container mx-auto py-10 space-y-6">
-      <div className="flex justify-end">
+    <main className="container mx-auto pt-10 pb-24 space-y-6">
+      <div className="flex justify-start">
         <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
       </div>
       <NoteForm

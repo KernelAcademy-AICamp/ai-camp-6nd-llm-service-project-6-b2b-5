@@ -14,6 +14,7 @@ import {
   PencilLine,
   MessageSquare,
   BookOpen,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +34,7 @@ const MENU: {
   label: string;
   icon: typeof LayoutDashboard;
   roles: Role[];
+  children?: { href: string; label: string }[];
 }[] = [
   { href: "/dashboard", label: "대시보드", icon: LayoutDashboard,
     roles: ["director", "teacher", "admin"] },
@@ -47,9 +49,19 @@ const MENU: {
   { href: "/dashboard/today-memo", label: "한줄기록", icon: PencilLine,
     roles: ["teacher"] },
   { href: "/dashboard/notes", label: "알림장", icon: MessageSquare,
-    roles: ["teacher"] },
+    roles: ["teacher"],
+    children: [
+      { href: "/dashboard/notes/new", label: "알림장 작성" },
+      { href: "/dashboard/notes", label: "알림장 목록" },
+      { href: "/dashboard/notes/drafts", label: "임시보관함" },
+    ] },
   { href: "/dashboard/observations", label: "관찰일지", icon: BookOpen,
-    roles: ["teacher"] },
+    roles: ["teacher"],
+    children: [
+      { href: "/dashboard/observations/new", label: "관찰기록 작성" },
+      { href: "/dashboard/observations", label: "관찰일지 목록" },
+      { href: "/dashboard/observations/timeline", label: "발달타임라인" },
+    ] },
   { href: "/dashboard/children?my=1", label: "아이 정보", icon: Baby,
     roles: ["parent"] },
   { href: "/dashboard/attendance", label: "출결 관리", icon: ClipboardCheck,
@@ -202,6 +214,56 @@ export function NavChrome({
                 Array.from(itemQuery.entries()).every(
                   ([k, v]) => sp.get(k) === v
                 );
+
+              // 하위메뉴가 있는 항목 (예: 알림장) — 해당 섹션 경로일 때 펼침
+              if (item.children) {
+                const sectionOpen = pathname.startsWith(itemPath);
+                return (
+                  <div key={item.href}>
+                    <Link
+                      href={buildMenuHref(item.children[0]?.href ?? item.href)}
+                      className={cn(
+                        "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                        sectionOpen
+                          ? "bg-emerald-50 text-emerald-700 font-medium"
+                          : "text-foreground hover:bg-accent"
+                      )}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                      <ChevronDown
+                        className={cn(
+                          "ml-auto h-4 w-4 transition-transform",
+                          sectionOpen ? "rotate-180" : "rotate-0"
+                        )}
+                      />
+                    </Link>
+                    {sectionOpen && (
+                      <div className="mt-1 ml-7 space-y-1">
+                        {item.children.map((sub) => {
+                          const subPath = sub.href.split("?")[0];
+                          const subActive = pathname === subPath;
+                          return (
+                            <Link
+                              key={sub.href}
+                              href={buildMenuHref(sub.href)}
+                              className={cn(
+                                "block px-3 py-1.5 rounded-md text-sm transition-colors",
+                                subActive
+                                  ? "text-emerald-700 font-semibold"
+                                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                              )}
+                            >
+                              {sub.label}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
               return (
                 <Link
                   key={item.href}

@@ -6,7 +6,6 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
-import { NotesTabs } from "../_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -43,26 +42,18 @@ export default async function DraftsPage({
     ? await loadData(active.id)
     : { drafts: [], childNameById: new Map<string, string>() };
 
-  const params = new URLSearchParams();
-  params.set("role", searchParams?.role ?? "teacher");
-  if (searchParams?.user) params.set("user", searchParams.user);
-  if (active) params.set("classroom", active.id);
-  const qs = `?${params.toString()}`;
-
   return (
-    <main className="container mx-auto py-10 space-y-10">
+    <main className="container mx-auto pt-10 pb-24 space-y-10">
       <section className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-slate-500">알림장 · 작성중</p>
+          <p className="text-sm font-medium text-slate-500">알림장 · 임시보관함</p>
           <h1 className="mt-1 flex items-center gap-2 text-2xl font-bold tracking-tight">
             <MessageSquare className="h-6 w-6 text-emerald-500" />
-            작성중인 알림장
+            임시저장된 알림장
           </h1>
         </div>
         <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
       </section>
-
-      <NotesTabs active="draft" qs={qs} />
 
       <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
         {drafts.length === 0 ? (

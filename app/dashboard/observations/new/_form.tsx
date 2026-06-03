@@ -93,10 +93,23 @@ export function ObservationForm({
   const childName = children.find((c) => c.id === childId)?.name ?? "";
 
   function toggleArea(a: AreaKey) {
-    setSelectedAreas((prev) =>
-      prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a],
-    );
-    setAllAreas(false);
+    // "전체" 상태에서 하나 클릭 → 그 항목만 해제하고 나머지는 선택 유지
+    if (allAreas) {
+      setAllAreas(false);
+      setSelectedAreas(AREA_KEYS.filter((k) => k !== a));
+      return;
+    }
+    setSelectedAreas((prev) => {
+      const next = prev.includes(a)
+        ? prev.filter((x) => x !== a)
+        : [...prev, a];
+      // 모든 영역이 다시 선택되면 "전체" 상태로 승격
+      if (next.length === AREA_KEYS.length) {
+        setAllAreas(true);
+        return [];
+      }
+      return next;
+    });
   }
   function toggleKeyword(k: string) {
     setSelectedKeywords((prev) =>
@@ -205,7 +218,7 @@ export function ObservationForm({
 
       <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4">
         {/* 좌측 필터 */}
-        <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
+        <section className="flex flex-col space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
             <div className="relative">
@@ -248,13 +261,13 @@ export function ObservationForm({
 
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">
-              관찰 영역 (선택)
+              누리과정 영역 (선택)
             </p>
             <ul className="space-y-1.5">
               <Checkbox
                 checked={allAreas}
                 onToggle={() => {
-                  setAllAreas(true);
+                  setAllAreas((prev) => !prev);
                   setSelectedAreas([]);
                 }}
                 label="전체"
@@ -262,7 +275,7 @@ export function ObservationForm({
               {AREA_KEYS.map((a) => (
                 <Checkbox
                   key={a}
-                  checked={!allAreas && selectedAreas.includes(a)}
+                  checked={allAreas || selectedAreas.includes(a)}
                   onToggle={() => toggleArea(a)}
                   label={AREA_LABELS[a]}
                 />
@@ -308,7 +321,7 @@ export function ObservationForm({
             onClick={generate}
             disabled={isPending}
             className={cn(
-              "mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
+              "!mt-auto flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
               isPending
                 ? "bg-emerald-300 text-white"
                 : "bg-emerald-600 text-white hover:bg-emerald-700",

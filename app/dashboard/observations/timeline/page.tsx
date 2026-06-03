@@ -6,7 +6,6 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
-import { ObservationTabs } from "../_tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -82,17 +81,11 @@ export default async function ObservationTimelinePage({
     ? await loadData(active.id)
     : { months: [], children: [], total: 0, childCount: 0, aiRate: 0 };
 
-  const params = new URLSearchParams();
-  params.set("role", searchParams?.role ?? "teacher");
-  if (searchParams?.user) params.set("user", searchParams.user);
-  if (active) params.set("classroom", active.id);
-  const qs = `?${params.toString()}`;
-
   const monthMax = Math.max(1, ...months.map((m) => m.count));
   const childMax = Math.max(1, ...children.map((c) => c.count));
 
   return (
-    <main className="container mx-auto py-10 space-y-6">
+    <main className="container mx-auto pt-10 pb-24 space-y-6">
       <section className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-xs text-slate-400">또랑 · 관찰일지 · 발달타임라인</p>
@@ -106,8 +99,6 @@ export default async function ObservationTimelinePage({
         </div>
         <ClassroomSwitcher classrooms={classrooms} activeId={active?.id ?? ""} />
       </section>
-
-      <ObservationTabs active="timeline" qs={qs} />
 
       {/* 누적 통계 */}
       <section className="grid grid-cols-3 gap-3">
