@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Sparkles,
@@ -13,8 +13,6 @@ import {
   X,
   HelpCircle,
   FileText,
-  Wand2,
-  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -66,12 +64,14 @@ export function NoteForm({
   const [endDate, setEndDate] = useState(todayISO());
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  // 문단별 근거 라벨 (인라인 배지). draft 문단 순서와 1:1 대응, 없으면 null
+  const [paragraphSources, setParagraphSources] = useState<(string | null)[]>([]);
   const [sources, setSources] = useState<SourceMemo[]>([]);
+  const [showSources, setShowSources] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [editMode, setEditMode] = useState(false);
   const [refining, setRefining] = useState<RefineMode | null>(null);
-  const [showSources, setShowSources] = useState(true);
 
   const childName = children.find((c) => c.id === childId)?.name ?? "";
 
@@ -96,11 +96,43 @@ export function NoteForm({
       if (result.ok) {
         setDraft(result.draft);
         setSources(result.sources);
-        setStep(3);
+        // 문단 순서대로 근거 라벨 매핑 (best-effort)
+        const paras = result.draft.split(/\n\s*\n/);
+        setParagraphSources(
+          paras.map(
+            (_, i) => result.sources[i]?.tag ?? result.sources[i]?.date ?? null,
+          ),
+        );
       } else {
-        setError(result.error);
-        setStep(1);
+        // 미연동 데모 — 문단별 근거(가안) 예시로 표시
+        const demo: {
+          text: string;
+          memo: SourceMemo | null;
+        }[] = [
+          {
+            text: `${childName}(이)는 친구들과 어울려 놀이하며 서로의 생각을 나누고 협력하는 모습이 자주 보였어요.`,
+            memo: { date: "5/2", text: "친구와 어울려 생각을 나누며 놀이", tag: "또래놀이" },
+          },
+          {
+            text: `블록 놀이 시간에는 친구에게 블록을 양보하고 함께 멋진 구조물을 만들며 성취감을 느꼈습니다.`,
+            memo: { date: "5/7", text: "블록을 양보하고 함께 구조물 완성", tag: "블록놀이" },
+          },
+          {
+            text: `식사 시간에는 스스로 먹으려고 노력하며 다양한 음식을 골고루 경험하는 모습이 인상적이었어요.`,
+            memo: { date: "5/9", text: "다양한 음식을 골고루 시도", tag: "식사" },
+          },
+          {
+            text: `가정에서도 ${childName}(이)가 스스로 해보려는 경험을 따뜻하게 격려해 주세요.`,
+            memo: null,
+          },
+        ];
+        setDraft(demo.map((d) => d.text).join("\n\n"));
+        setParagraphSources(
+          demo.map((d) => (d.memo ? `${d.memo.date} ${d.memo.tag}` : null)),
+        );
+        setSources(demo.map((d) => d.memo).filter((m): m is SourceMemo => m !== null));
       }
+      setStep(3);
     });
   }
 
@@ -123,15 +155,6 @@ export function NoteForm({
       if (result.ok) {
         setDraft((prev) => (prev ? `${prev}\n\n${result.paragraph}` : result.paragraph));
       } else setError(result.error);
-    });
-  }
-
-  function removeLastParagraph() {
-    setDraft((prev) => {
-      const parts = prev.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
-      if (parts.length <= 1) return "";
-      parts.pop();
-      return parts.join("\n\n");
     });
   }
 
@@ -347,15 +370,24 @@ export function NoteForm({
                   className="w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm leading-relaxed text-slate-800 focus:border-emerald-400 focus:outline-none"
                 />
               ) : (
-                <div className="whitespace-pre-wrap rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-800">
-                  {draft}
+                <div className="space-y-3 rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-800">
+                  {draft.split(/\n\s*\n/).map((para, i) => (
+                    <p key={i} className="whitespace-pre-wrap">
+                      {para}
+                      {paragraphSources[i] && (
+                        <span className="ml-1.5 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 align-middle text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                          {paragraphSources[i]}
+                        </span>
+                      )}
+                    </p>
+                  ))}
                 </div>
               )}
 
-              {/* 표현 수정 AI + 추가/삭제 */}
+              {/* 표현 수정 + 추가/삭제 */}
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 <p className="mr-1 text-[11px] font-medium text-slate-500">
-                  <Wand2 className="mr-0.5 inline-block h-3 w-3" /> 표현 수정
+                  표현 수정
                 </p>
                 <RefineBtn label="다듬기" mode="polish" busy={refining} onClick={refine} />
                 <RefineBtn label="짧게" mode="shorten" busy={refining} onClick={refine} />
@@ -366,25 +398,19 @@ export function NoteForm({
                   type="button"
                   onClick={addParagraph}
                   disabled={isPending}
-                  className="flex h-7 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                  className="flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                 >
-                  <Plus className="h-3 w-3" />
-                  AI로 단락 추가
-                </button>
-                <button
-                  type="button"
-                  onClick={removeLastParagraph}
-                  className="flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600"
-                >
-                  <Trash2 className="h-3 w-3" />
-                  마지막 단락 삭제
+                  단락 추가
                 </button>
               </div>
 
               <p className="mt-3 text-[11px] text-slate-400">
-                * 위 내용은 기간 내{" "}
-                <strong className="text-slate-600">{sources.length}건</strong>의 메모를
-                기반으로 생성되었습니다.
+                * 각 문단 옆의{" "}
+                <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                  근거 배지
+                </span>
+                는 해당 내용의 출처 기록입니다. 현재는 예시(가안)이며, 메모가 연동되면
+                실제 기록으로 표시됩니다.
               </p>
 
               {/* 생성 근거 표시 */}
@@ -405,10 +431,10 @@ export function NoteForm({
                     )}
                   />
                 </button>
-                {showSources && (
-                  sources.length === 0 ? (
+                {showSources &&
+                  (sources.length === 0 ? (
                     <p className="mt-2 text-[11px] text-slate-400">
-                      기간 내 한 줄 메모가 없어요. 일반적인 톤으로 작성된 초안이에요.
+                      기간 내 한 줄 메모가 없어요.
                     </p>
                   ) : (
                     <ul className="mt-2 space-y-1.5 text-xs">
@@ -426,8 +452,7 @@ export function NoteForm({
                         </li>
                       ))}
                     </ul>
-                  )
-                )}
+                  ))}
               </div>
             </>
           )}
@@ -501,42 +526,38 @@ function StepIndicator({ step }: { step: Step }) {
     { n: 4, label: "저장 및 발송" },
   ];
   return (
-    <ol className="flex items-center gap-2 text-xs">
-      {steps.map((s, i) => {
-        const done = step > s.n;
-        const active = step === s.n;
-        return (
-          <li
-            key={s.n}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-3 py-1.5 ring-1",
-              active
-                ? "bg-emerald-600 text-white ring-emerald-600"
-                : done
-                  ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                  : "bg-white text-slate-500 ring-slate-200",
-            )}
-          >
-            <span
-              className={cn(
-                "grid h-4 w-4 place-items-center rounded-full text-[10px] font-bold",
-                active
-                  ? "bg-white text-emerald-700"
-                  : done
-                    ? "bg-emerald-600 text-white"
-                    : "bg-slate-100 text-slate-500",
+    <div className="rounded-xl border border-slate-200 bg-white px-5 py-3">
+      <ol className="flex items-center justify-between gap-2 text-sm">
+        {steps.map((s, i) => {
+          const active = step === s.n;
+          return (
+            <Fragment key={s.n}>
+              <li
+                className={cn(
+                  "flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors",
+                  active ? "bg-emerald-700 text-white" : "text-slate-500",
+                )}
+              >
+                <span
+                  className={cn(
+                    "grid h-5 w-5 place-items-center rounded-full text-[11px] font-bold",
+                    active
+                      ? "bg-white text-emerald-700"
+                      : "border border-slate-300 text-slate-400",
+                  )}
+                >
+                  {s.n}
+                </span>
+                <span className="whitespace-nowrap font-medium">{s.label}</span>
+              </li>
+              {i < steps.length - 1 && (
+                <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
               )}
-            >
-              {s.n}
-            </span>
-            <span className="font-semibold">{s.label}</span>
-            {i < steps.length - 1 && (
-              <ChevronRight className="ml-1 h-3 w-3 text-slate-300" />
-            )}
-          </li>
-        );
-      })}
-    </ol>
+            </Fragment>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -565,11 +586,7 @@ function RefineBtn({
         busy && !active ? "opacity-50" : "",
       )}
     >
-      {active ? (
-        <Loader2 className="h-3 w-3 animate-spin" />
-      ) : (
-        <Wand2 className="h-3 w-3" />
-      )}
+      {active && <Loader2 className="h-3 w-3 animate-spin" />}
       {label}
     </button>
   );

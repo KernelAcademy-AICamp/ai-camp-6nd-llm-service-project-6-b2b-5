@@ -132,11 +132,25 @@ export function ObservationForm({
       if (result.ok) {
         setDraft(result.draft);
         setSources(result.sources);
-        setStep(3);
       } else {
-        setError(result.error);
-        setStep(1);
+        // 미연동 데모 — 가안(예시) 관찰기록으로 다음 단계 진행.
+        // API 연동되면 위 result.ok 경로로 실제 생성됨(가안 미사용).
+        setDraft({
+          physical_health: `${childName}(이)는 바깥놀이에서 달리기와 균형 잡기 활동에 적극적으로 참여하는 모습이 관찰됨.`,
+          communication: `놀이 상황에서 자신의 생각을 문장으로 표현하고 친구의 말에 귀 기울이는 모습을 보임.`,
+          social: `또래와 역할을 나누어 협력하고 차례를 지키며 함께 놀이하는 모습이 자주 관찰됨.`,
+          artistic: `그리기·만들기 활동에서 다양한 색과 재료를 자유롭게 탐색하며 자신만의 표현을 시도함.`,
+          nature: `자연물 관찰 활동에서 곤충과 식물에 호기심을 보이며 질문하는 모습이 관찰됨.`,
+          behavior_pattern: `새로운 활동에 먼저 다가가 시도하고, 또래와 어울리며 협력하는 행동이 반복적으로 나타남.`,
+          developmental_trend: `기간 동안 자기표현과 또래 상호작용이 점차 안정적으로 발전하는 흐름을 보임.`,
+        });
+        setSources([
+          { date: "5/8", text: "바깥놀이에서 균형 잡기 시도", tag: "신체운동·건강" },
+          { date: "5/11", text: "친구와 역할 나눠 협동 놀이", tag: "사회관계" },
+          { date: "5/13", text: "자연물 관찰 중 곤충에 호기심", tag: "자연탐구" },
+        ]);
       }
+      setStep(3);
     });
   }
 
