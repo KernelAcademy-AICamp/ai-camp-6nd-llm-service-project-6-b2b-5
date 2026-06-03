@@ -25,7 +25,11 @@ import {
   autoClassifyByProfileAction,
   type PhotoAnalysis,
 } from "./actions";
-import { DEMO_UPLOAD_DOGS, getDemoDogProfile } from "@/lib/demo-dogs";
+import {
+  DEMO_UPLOAD_DOGS,
+  getDemoDogProfile,
+  getDemoUploadsForBreeds,
+} from "@/lib/demo-dogs";
 import {
   loadHandoff,
   saveHandoff,
@@ -491,7 +495,15 @@ export function ActivityRecordForm({
     setError(null);
     try {
       const remaining = MAX_PHOTOS - images.length;
-      const urls = DEMO_UPLOAD_DOGS.slice(0, Math.max(0, remaining));
+      // 활성 반 원아들의 견종에 맞춰 로드(모두 매칭됨). 프로필 없는 반이면 기본 10장.
+      const classBreeds = children
+        .map((c) => getDemoDogProfile(c.name)?.breed)
+        .filter((b): b is string => !!b);
+      const source =
+        classBreeds.length > 0
+          ? getDemoUploadsForBreeds(classBreeds)
+          : DEMO_UPLOAD_DOGS;
+      const urls = source.slice(0, Math.max(0, remaining));
       const loaded: UploadedImage[] = [];
       for (let i = 0; i < urls.length; i++) {
         const dataUrl = await urlToCompressedDataUrl(urls[i]);
@@ -1330,6 +1342,7 @@ export function ActivityRecordForm({
                   {children.map((c) => {
                     const count = draftPhotosForChild(c.id).length;
                     const active = selectedChild?.id === c.id;
+                    const dogProfile = getDemoDogProfile(c.name);
                     return (
                       <li key={c.id}>
                         <button
@@ -1343,18 +1356,33 @@ export function ActivityRecordForm({
                           )}
                         >
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span
-                              className={cn(
-                                "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold",
-                                active
-                                  ? "bg-white/25 text-white"
-                                  : c.gender === "F"
-                                    ? "bg-rose-100 text-rose-600"
-                                    : "bg-emerald-100 text-emerald-700",
-                              )}
-                            >
-                              {c.name.charAt(0)}
-                            </span>
+                            {dogProfile ? (
+                              // 등록된 프로필 강아지(매칭 기준) 썸네일
+                              <span
+                                className="h-7 w-7 shrink-0 overflow-hidden rounded-full ring-1 ring-white/40"
+                                title={`프로필: ${dogProfile.breed}`}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={dogProfile.url}
+                                  alt={`${c.name} 프로필`}
+                                  className="h-full w-full object-cover"
+                                />
+                              </span>
+                            ) : (
+                              <span
+                                className={cn(
+                                  "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold",
+                                  active
+                                    ? "bg-white/25 text-white"
+                                    : c.gender === "F"
+                                      ? "bg-rose-100 text-rose-600"
+                                      : "bg-emerald-100 text-emerald-700",
+                                )}
+                              >
+                                {c.name.charAt(0)}
+                              </span>
+                            )}
                             <span className="truncate font-medium">{c.name}</span>
                           </span>
                           {count > 0 && (

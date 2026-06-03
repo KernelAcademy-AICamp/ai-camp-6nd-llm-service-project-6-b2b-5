@@ -33,7 +33,22 @@ export const DEMO_UPLOAD_DOGS: string[] = [
   "/demo-dogs/up_dalmatian_1.jpg",
 ];
 
+/** 견종별 업로드 강아지 사진 (활성 반 원아 견종에 맞춰 로드용) */
+export const DEMO_UPLOAD_BY_BREED: Record<string, string[]> = {
+  비글: ["/demo-dogs/up_beagle_1.jpg", "/demo-dogs/up_beagle_2.jpg"],
+  포메라니안: ["/demo-dogs/up_pomeranian_1.jpg", "/demo-dogs/up_pomeranian_2.jpg"],
+  골든리트리버: ["/demo-dogs/up_golden_1.jpg", "/demo-dogs/up_golden_2.jpg"],
+  퍼그: ["/demo-dogs/up_pug_1.jpg", "/demo-dogs/up_pug_2.jpg"],
+  웰시코기: ["/demo-dogs/up_corgi_1.jpg", "/demo-dogs/up_corgi_2.jpg"],
+  달마시안: ["/demo-dogs/up_dalmatian_1.jpg", "/demo-dogs/up_dalmatian_2.jpg"],
+};
+
 /** 이름으로 프로필 강아지(사진+견종) 조회 (없으면 null) */
 export function getDemoDogProfile(name: string): DemoDogProfile | null {
   return DEMO_DOG_PROFILE_BY_NAME[name] ?? null;
+}
+
+/** 견종 목록 → 해당 견종 업로드 사진 경로 모음 */
+export function getDemoUploadsForBreeds(breeds: string[]): string[] {
+  return breeds.flatMap((b) => DEMO_UPLOAD_BY_BREED[b] ?? []);
 }
