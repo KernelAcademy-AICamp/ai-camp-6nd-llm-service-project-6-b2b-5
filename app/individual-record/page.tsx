@@ -4,7 +4,11 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CHILDREN_PROFILES, getProfileById } from "@/lib/children-profiles";
+import {
+  CHILDREN_PROFILES,
+  getProfileById,
+  profileTraits,
+} from "@/lib/children-profiles";
 import { applyChildName } from "@/lib/korean-particles";
 import type { IndividualRecordResult } from "@/lib/individual-record-prompt";
 
@@ -108,7 +112,7 @@ function PageInner() {
     try {
       const fd = new FormData();
       // ⚠️ name은 절대 전송하지 않음. traits만 전송하여 AI가 누구인지 모르게 한다.
-      fd.append("traits", profile.traits.join(" / "));
+      fd.append("traits", profileTraits(profile).join(" / "));
       fd.append("commonDraft", commonDraft);
       fd.append("teacherMemo", teacherMemo);
       for (const it of images) fd.append("images", it.file);
@@ -194,7 +198,7 @@ function PageInner() {
           <div className="mt-3 rounded-lg bg-secondary/40 p-3">
             <p className="mb-1 text-xs font-semibold">성향 프로필</p>
             <ul className="flex flex-wrap gap-1.5">
-              {profile.traits.map((t, i) => (
+              {profileTraits(profile).map((t, i) => (
                 <li
                   key={i}
                   className="rounded-full bg-background px-2 py-0.5 text-xs"

@@ -1,4 +1,9 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  getTemperamentByName,
+  type Temperament,
+  type Sensitivity,
+} from "@/lib/children-profiles";
 
 // ?user= 미지정 시 기본 교사 페르소나 (이교사)
 export const DEFAULT_TEACHER_ID = "00000000-0000-0000-0000-000000000002";
@@ -59,6 +64,8 @@ export type ChildContextPayload = {
   keywords: string[];
   memos: Array<{ date: string; text: string; sessionTitle: string | null }>;
   sessionTitles: string[]; // sessions found in period
+  temperament: Temperament | null; // 원아 기질 5칼럼 (이름 매핑)
+  sensitivity: Sensitivity | null; // 기질 예민도 상/중/하
 };
 
 export async function loadChildContext(args: {
@@ -140,6 +147,9 @@ export async function loadChildContext(args: {
     ),
   );
 
+  // 원아 이름으로 기질·예민도 매핑 (관찰일지 AI 반영용)
+  const temperamentInfo = getTemperamentByName(child.name);
+
   return {
     child: { id: child.id, name: child.name },
     classroom: { id: myClass.id, name: myClass.name },
@@ -148,10 +158,15 @@ export async function loadChildContext(args: {
     keywords: args.keywords,
     memos,
     sessionTitles,
+    temperament: temperamentInfo?.temperament ?? null,
+    sensitivity: temperamentInfo?.sensitivity ?? null,
   };
 }
 
-export function contextToPromptText(ctx: ChildContextPayload): string {
+export function contextToPromptText(
+  ctx: ChildContextPayload,
+  opts?: { includeTemperament?: boolean },
+): string {
   const parts: string[] = [];
   parts.push(`원아: ${ctx.child.name} (${ctx.classroom.name})`);
   parts.push(`기간: ${ctx.period.start} ~ ${ctx.period.end}`);
@@ -160,6 +175,24 @@ export function contextToPromptText(ctx: ChildContextPayload): string {
   );
   if (ctx.keywords.length > 0) {
     parts.push(`반영 키워드: ${ctx.keywords.join(", ")}`);
+  }
+
+  // 기질 블록 — 관찰일지 등에서만 옵션으로 주입(알림장 기본 미포함)
+  if (opts?.includeTemperament && ctx.temperament) {
+    const t = ctx.temperament;
+    parts.push(
+      [
+        `\n[원아 기질 — 행동 해석의 보조 참고]`,
+        `· 활동성: ${t.활동성}`,
+        `· 사회성: ${t.사회성}`,
+        `· 정서성: ${t.정서성}`,
+        `· 적응성: ${t.적응성}`,
+        `· 자기조절: ${t.자기조절}`,
+        ctx.sensitivity ? `· 기질 예민도: ${ctx.sensitivity}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
   }
   if (ctx.memos.length > 0) {
     parts.push(`\n[기간 내 한 줄 메모 ${ctx.memos.length}건]`);
