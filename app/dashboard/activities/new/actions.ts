@@ -693,3 +693,143 @@ export async function loadSavedChildPhotosAction(args: {
     return { ok: false, error: e instanceof Error ? e.message : "조회 실패" };
   }
 }
+
+// =============================================================
+// 데모 — 강아지 사진 기반 원아별 자동 분류
+// 업로드 사진 ↔ 원아 프로필 강아지를 외형(견종)으로 매칭한다.
+// 사람 신원 식별이 아니라 데모용 강아지 외형 매칭이므로 프라이버시 이슈 없음.
+// =============================================================
+
+export type ProfileMatchInput = {
+  childId: string;
+  dataUrl: string;
+  label?: string; // 견종 라벨(데모 힌트)
+};
+export type UploadMatchInput = { photoId: string; dataUrl: string };
+
+const AUTO_CLASSIFY_SYSTEM_PROMPT = `당신은 강아지 사진의 견종(외형·색·무늬)을 판별해 프로필과 매칭하는 AI입니다.
+[프로필] 강아지들(각 견종 라벨 제공)과 [사진] 강아지들이 주어집니다.
+각 [사진]의 강아지 견종을 시각적으로 판별한 뒤, 같은 견종의 [프로필] 인덱스로 매칭하세요.
+- 같은 견종이면 그 프로필 인덱스, 어느 프로필 견종과도 다르면 -1
+- 한 사진은 한 프로필에만 매칭 (가장 가까운 하나)
+- 같은 견종 사진이 여러 장이면 모두 같은 프로필로 매칭
+지정된 JSON 스키마로만 응답.`;
+
+const AUTO_CLASSIFY_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    matches: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          upload: { type: "integer" as const },
+          profile: { type: "integer" as const },
+        },
+        required: ["upload", "profile"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["matches"],
+  additionalProperties: false,
+};
+
+type ImgBlock = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+    data: string;
+  };
+};
+
+function toImageBlock(dataUrl: string): ImgBlock | null {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: parsed.mediaType as ImgBlock["source"]["media_type"],
+      data: parsed.data,
+    },
+  };
+}
+
+/**
+ * 업로드 사진을 원아 프로필 강아지와 외형 매칭해 원아별 배정을 반환.
+ * 반환: photoId -> childId
+ */
+export async function autoClassifyByProfileAction(args: {
+  profiles: ProfileMatchInput[];
+  uploads: UploadMatchInput[];
+}): Promise<
+  | { ok: true; assignments: Record<string, string> }
+  | { ok: false; error: string }
+> {
+  try {
+    if (args.profiles.length === 0 || args.uploads.length === 0) {
+      return { ok: true, assignments: {} };
+    }
+
+    const content: Array<ImgBlock | { type: "text"; text: string }> = [];
+    content.push({ type: "text", text: "[프로필 강아지]" });
+    args.profiles.forEach((p, i) => {
+      const block = toImageBlock(p.dataUrl);
+      if (!block) return;
+      content.push({
+        type: "text",
+        text: p.label ? `프로필 ${i} (견종: ${p.label})` : `프로필 ${i}`,
+      });
+      content.push(block);
+    });
+    content.push({ type: "text", text: "[분류할 사진]" });
+    args.uploads.forEach((u, i) => {
+      const block = toImageBlock(u.dataUrl);
+      if (!block) return;
+      content.push({ type: "text", text: `사진 ${i}` });
+      content.push(block);
+    });
+    content.push({
+      type: "text",
+      text: `위 ${args.uploads.length}장의 [사진] 각각을 가장 닮은 [프로필] 인덱스(없으면 -1)로 매칭해 JSON 으로 응답하세요.`,
+    });
+
+    const client = getAnthropic();
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 800,
+      output_config: {
+        format: { type: "json_schema", schema: AUTO_CLASSIFY_SCHEMA },
+      },
+      system: [
+        {
+          type: "text",
+          text: AUTO_CLASSIFY_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content }],
+    });
+
+    const jsonText = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
+    const parsed = JSON.parse(jsonText) as {
+      matches: Array<{ upload: number; profile: number }>;
+    };
+
+    const assignments: Record<string, string> = {};
+    for (const m of parsed.matches ?? []) {
+      const u = args.uploads[m.upload];
+      const p = args.profiles[m.profile];
+      if (u && p && m.profile >= 0) assignments[u.photoId] = p.childId;
+    }
+    return { ok: true, assignments };
+  } catch (e) {
+    console.error("[활동기록] 자동 분류 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "자동 분류 실패" };
+  }
+}

@@ -22,8 +22,10 @@ import {
   generateChildSummariesAction,
   saveActivityRecordAction,
   loadSavedChildPhotosAction,
+  autoClassifyByProfileAction,
   type PhotoAnalysis,
 } from "./actions";
+import { DEMO_UPLOAD_DOGS, getDemoDogProfile } from "@/lib/demo-dogs";
 import {
   loadHandoff,
   saveHandoff,
@@ -119,6 +121,34 @@ async function fileToCompressedDataUrl(file: File): Promise<string> {
   });
 }
 
+/** 같은 출처(/public) 이미지 URL → 압축 jpeg dataUrl (데모 강아지 로드용) */
+async function urlToCompressedDataUrl(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(
+        MAX_IMAGE_DIM / img.width,
+        MAX_IMAGE_DIM / img.height,
+        1,
+      );
+      const w = Math.round(img.width * ratio);
+      const h = Math.round(img.height * ratio);
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas 컨텍스트 실패"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", IMAGE_QUALITY));
+    };
+    img.onerror = () => reject(new Error("이미지 로드 실패: " + url));
+    img.src = url;
+  });
+}
+
 /**
  * 활동 기록 작성 폼 (1단계 매일 활동 기록 + 2단계 원아 활동 기록)
  * @param childOptions 담당 반 원아 목록
@@ -189,6 +219,12 @@ export function ActivityRecordForm({
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   // 분류 팝업 중앙 드롭존 하이라이트
   const [centerDropActive, setCenterDropActive] = useState(false);
+  // 데모 강아지 자동분류 디폴트 (캐시) + 진행 상태
+  const [defaultAssignments, setDefaultAssignments] = useState<
+    Record<string, string>
+  >({});
+  const [autoClassifying, setAutoClassifying] = useState(false);
+  const defaultComputedRef = useRef(false);
   // 저장 검증 — DB에서 다시 불러온 원아별 사진(서명 URL)
   const [savedPhotosByChild, setSavedPhotosByChild] = useState<
     Record<string, string[]>
@@ -349,6 +385,7 @@ export function ActivityRecordForm({
           for (const u of uploads) out.add(u.id);
           return out;
         });
+        invalidateDefault();
         runAnalysis(next);
       }
       if (rejected.length > 0) {
@@ -425,7 +462,14 @@ export function ActivityRecordForm({
     setPhotoActivityTags(drop);
     setDraftAssignments(drop);
     setDraftTags(drop);
+    invalidateDefault();
     markDirty();
+  }
+
+  /** 사진 구성이 바뀌면 자동분류 디폴트 캐시를 무효화 */
+  function invalidateDefault() {
+    defaultComputedRef.current = false;
+    setDefaultAssignments({});
   }
 
   /** 업로드한 사진 전체 삭제 (분석·분류 포함 초기화) */
@@ -437,7 +481,63 @@ export function ActivityRecordForm({
     setDraftAssignments({});
     setDraftTags({});
     setAnalysis(null);
+    invalidateDefault();
     markDirty();
+  }
+
+  /** 데모 강아지 사진 10장을 업로드 영역에 불러오기 */
+  async function loadDemoDogs() {
+    setUploading(true);
+    setError(null);
+    try {
+      const remaining = MAX_PHOTOS - images.length;
+      const urls = DEMO_UPLOAD_DOGS.slice(0, Math.max(0, remaining));
+      const loaded: UploadedImage[] = [];
+      for (let i = 0; i < urls.length; i++) {
+        const dataUrl = await urlToCompressedDataUrl(urls[i]);
+        loaded.push({
+          id: `dog-${Date.now()}-${i}`,
+          dataUrl,
+          name: urls[i].split("/").pop() ?? "dog.jpg",
+        });
+      }
+      if (loaded.length === 0) return;
+      const next = [...images, ...loaded];
+      setImages(next);
+      setSelectedPhotoIds((prev) => {
+        const s = new Set(prev);
+        loaded.forEach((l) => s.add(l.id));
+        return s;
+      });
+      invalidateDefault();
+      runAnalysis(next);
+    } catch (e) {
+      console.error("[활동기록] 데모 강아지 로드 실패", e);
+      setError(e instanceof Error ? e.message : "데모 사진 로드 실패");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  /** 강아지 프로필 매칭으로 원아별 디폴트 배정 계산 (photoId -> childId) */
+  async function computeDefaultClassification(): Promise<
+    Record<string, string>
+  > {
+    const profChildren = children.filter((c) => getDemoDogProfile(c.name));
+    if (profChildren.length === 0 || images.length === 0) return {};
+    const profiles: { childId: string; dataUrl: string; label?: string }[] = [];
+    for (const c of profChildren) {
+      const prof = getDemoDogProfile(c.name);
+      if (!prof) continue;
+      profiles.push({
+        childId: c.id,
+        dataUrl: await urlToCompressedDataUrl(prof.url),
+        label: prof.breed,
+      });
+    }
+    const uploads = images.map((p) => ({ photoId: p.id, dataUrl: p.dataUrl }));
+    const res = await autoClassifyByProfileAction({ profiles, uploads });
+    return res.ok ? res.assignments : {};
   }
 
   function togglePhotoSelection(id: string) {
@@ -676,14 +776,39 @@ export function ActivityRecordForm({
   }
 
   /** 분류 팝업 열기 — 첫 원아 자동 선택 */
-  /** 분류 팝업 열기 — 확정본을 작업본(draft)으로 복제, 첫 원아 선택 */
-  function openClassifyModal() {
-    setDraftAssignments({ ...photoAssignments });
-    setDraftTags({ ...photoActivityTags });
+  /**
+   * 분류 팝업 열기.
+   * - 확정본이 있으면 그걸 작업본으로 복제
+   * - 없으면 강아지 프로필 매칭으로 자동분류 디폴트를 계산(캐시)해 작업본에 채움
+   */
+  async function openClassifyModal() {
     if (children.length > 0) {
       setSelectedChildId((prev) => prev || children[0].id);
     }
     setShowClusterModal(true);
+    setDraftTags({ ...photoActivityTags });
+
+    const hasCommitted = Object.keys(photoAssignments).length > 0;
+    if (hasCommitted) {
+      setDraftAssignments({ ...photoAssignments });
+      return;
+    }
+    // 디폴트 자동분류 (이미 계산했으면 재사용)
+    if (defaultComputedRef.current) {
+      setDraftAssignments({ ...defaultAssignments });
+      return;
+    }
+    setAutoClassifying(true);
+    try {
+      const def = await computeDefaultClassification();
+      setDefaultAssignments(def);
+      defaultComputedRef.current = true;
+      setDraftAssignments(def);
+    } catch (e) {
+      console.error("[활동기록] 자동분류 디폴트 실패", e);
+    } finally {
+      setAutoClassifying(false);
+    }
   }
 
   /** 분류 완료 — 작업본을 확정본에 커밋하고 팝업 닫기 */
@@ -694,9 +819,9 @@ export function ActivityRecordForm({
     setShowClusterModal(false);
   }
 
-  /** 작업 초기화 — 현재 작업본을 디폴트(빈 배정)로 되돌림 */
+  /** 작업 초기화 — 현재 작업본을 자동분류 디폴트로 되돌림 */
   function resetClassification() {
-    setDraftAssignments({});
+    setDraftAssignments({ ...defaultAssignments });
     setDraftTags({});
   }
 
@@ -829,6 +954,18 @@ export function ActivityRecordForm({
             className="hidden"
             onChange={(e) => handleReplaceFile(e.target.files)}
           />
+          {/* 데모: 강아지 사진 불러오기 (원아 프로필 강아지와 외형 매칭 자동분류 시연) */}
+          <div className="mb-2 flex items-center justify-end">
+            <button
+              type="button"
+              onClick={loadDemoDogs}
+              disabled={uploading}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              title="무료 강아지 사진 10장을 불러와 자동분류를 시연합니다"
+            >
+              🐶 데모 강아지 사진 불러오기
+            </button>
+          </div>
           {images.length === 0 ? (
             <button
               type="button"
@@ -1162,6 +1299,12 @@ export function ActivityRecordForm({
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {autoClassifying && (
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    자동 분류 중…
+                  </span>
+                )}
                 <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                   배정 {draftAssignedCount}/{images.length}장 · 원아 {draftMatchedCount}명
                 </span>
