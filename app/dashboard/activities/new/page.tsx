@@ -54,6 +54,8 @@ export default async function NewActivityPage({
       <ActivityRecordForm
         childOptions={children}
         classroomName={active?.name ?? "담당 반 없음"}
+        classroomId={active?.id ?? ""}
+        teacherId={teacherId}
         backHref={`/dashboard${qs}`}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         initialStep={initialStep}

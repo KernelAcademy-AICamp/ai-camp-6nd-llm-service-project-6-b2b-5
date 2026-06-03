@@ -13,17 +13,21 @@ import {
   Users,
   ArrowRight,
   ArrowLeft,
+  RotateCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   analyzePhotosAction,
   clusterPhotosAction,
   generateChildSummariesAction,
+  saveActivityRecordAction,
+  loadSavedChildPhotosAction,
   type PhotoAnalysis,
 } from "./actions";
 import {
-  DAILY_ACTIVITY_STORAGE_KEY,
   loadHandoff,
+  saveHandoff,
+  clearHandoff,
   type DailyActivityHandoff,
 } from "@/lib/activity-handoff";
 
@@ -55,6 +59,36 @@ const STEP_META: Record<StepNumber, { label: string; sub: string }> = {
 
 const MAX_IMAGE_DIM = 1280;
 const IMAGE_QUALITY = 0.82;
+
+/** 업로드 허용 이미지 MIME 타입 (jpg/jpeg/png/webp) */
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+/** 사용자 안내용 허용 형식 라벨 */
+const ALLOWED_EXT_LABEL = "JPG, JPEG, PNG, WEBP";
+
+/** 파일이 허용된 이미지 형식인지 확인 */
+function isAllowedImage(file: File): boolean {
+  return ALLOWED_IMAGE_TYPES.includes(file.type);
+}
+
+/** DB 저장 타임아웃 (ms) — 명세 T3-3 */
+const SAVE_TIMEOUT_MS = 10_000;
+
+/** Promise 에 타임아웃 적용. 초과 시 "TIMEOUT" 에러로 거부 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("TIMEOUT")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 
 async function fileToCompressedDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -88,20 +122,36 @@ async function fileToCompressedDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * 활동 기록 작성 폼 (1단계 매일 활동 기록 + 2단계 원아 활동 기록)
+ * @param childOptions 담당 반 원아 목록
+ * @param classroomName 현재 반 이름
+ * @param classroomId 현재 반 id (DB 저장용)
+ * @param teacherId 작성 교사 id (DB 저장용)
+ * @param todayMemoHref 한줄기록(오늘 메모) 링크
+ * @param backHref 대시보드 복귀 링크
+ * @param initialStep 진입 시 시작 단계 (1 | 2)
+ */
 export function ActivityRecordForm({
   childOptions: children,
   classroomName,
+  classroomId,
+  teacherId,
   todayMemoHref,
   backHref,
   initialStep,
 }: {
   childOptions: ChildOption[];
   classroomName: string;
+  classroomId: string;
+  teacherId: string;
   todayMemoHref: string;
   backHref: string;
   initialStep: StepNumber;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const replacingIdRef = useRef<string | null>(null);
   const [step, setStep] = useState<StepNumber>(initialStep);
 
   // step 1 — 사진 + AI 분석
@@ -109,16 +159,32 @@ export function ActivityRecordForm({
   const [analysis, setAnalysis] = useState<PhotoAnalysis | null>(null);
   const [editingAnalysis, setEditingAnalysis] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
 
-  // 사진 분류 (팝업) — 그룹핑 + 매칭
+  // 사진 분류 (팝업) — AI 그룹핑(외형) + 원아별 배정
   const [clusters, setClusters] = useState<PhotoClusterUI[]>([]);
-  const [clusterMatches, setClusterMatches] = useState<Record<string, string>>(
-    {},
-  );
+  // photoId -> childId (원아별 사진 배정). 3-pane 팝업에서 관리.
+  const [photoAssignments, setPhotoAssignments] = useState<
+    Record<string, string>
+  >({});
+  // photoId -> 활동 태그 (사진별)
+  const [photoActivityTags, setPhotoActivityTags] = useState<
+    Record<string, string>
+  >({});
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(
     new Set(),
   );
   const [showClusterModal, setShowClusterModal] = useState(false);
+  // 분류 팝업 좌측에서 선택된 원아
+  const [selectedChildId, setSelectedChildId] = useState<string>("");
+  // DB 저장 상태
+  const [saving, setSaving] = useState(false);
+  // 저장 검증 — DB에서 다시 불러온 원아별 사진(서명 URL)
+  const [savedPhotosByChild, setSavedPhotosByChild] = useState<
+    Record<string, string[]>
+  >({});
+  const [loadingSaved, setLoadingSaved] = useState(false);
+  const [savedLoaded, setSavedLoaded] = useState(false);
 
   // step 3 — 원아별 한 줄 메모 (전체 리스트 인라인 편집)
   const [savedMemos, setSavedMemos] = useState<Record<string, string>>({});
@@ -129,27 +195,26 @@ export function ActivityRecordForm({
   const [isPending, startTransition] = useTransition();
   const hydratedRef = useRef(false);
 
-  // 마운트 시 sessionStorage 핸드오프 복원 (단계 직접 진입 시 유용)
+  // 마운트 시 핸드오프 복원 (새로고침/단계 직접 진입 시 유용)
+  // sessionStorage 우선, 없으면 localStorage 백업에서 복원
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
     const handoff = loadHandoff();
     if (!handoff) return;
     const restoredImages: UploadedImage[] = [];
-    const restoredClusters: PhotoClusterUI[] = [];
-    const restoredMatches: Record<string, string> = {};
+    const restoredAssignments: Record<string, string> = {};
+    const restoredTags: Record<string, string> = {};
     for (const cluster of handoff.clusters) {
-      const photoIds: string[] = [];
       for (const photo of cluster.photos) {
         restoredImages.push({
           id: photo.id,
           dataUrl: photo.dataUrl,
           name: photo.id,
         });
-        photoIds.push(photo.id);
+        if (cluster.childId) restoredAssignments[photo.id] = cluster.childId;
+        if (photo.activity) restoredTags[photo.id] = photo.activity;
       }
-      restoredClusters.push({ description: cluster.description, photoIds });
-      if (cluster.childId) restoredMatches[cluster.description] = cluster.childId;
     }
     const uniqueImages = Array.from(
       new Map(restoredImages.map((p) => [p.id, p])).values(),
@@ -158,10 +223,29 @@ export function ActivityRecordForm({
       setImages(uniqueImages);
       setSelectedPhotoIds(new Set(uniqueImages.map((p) => p.id)));
     }
-    if (restoredClusters.length > 0) setClusters(restoredClusters);
-    if (Object.keys(restoredMatches).length > 0) setClusterMatches(restoredMatches);
+    if (Object.keys(restoredAssignments).length > 0)
+      setPhotoAssignments(restoredAssignments);
+    if (Object.keys(restoredTags).length > 0) setPhotoActivityTags(restoredTags);
     if (handoff.analysis) setAnalysis(handoff.analysis);
   }, []);
+
+  // 분류 팝업 열림 중 ESC 키로 닫기
+  useEffect(() => {
+    if (!showClusterModal) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowClusterModal(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showClusterModal]);
+
+  // 2단계 진입 시 DB 저장된 원아별 사진을 한 번 자동 조회
+  useEffect(() => {
+    if (step === 2 && !savedLoaded && classroomId) {
+      refreshSavedPhotos();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   const today = new Date();
   const dateLabel = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
@@ -192,15 +276,21 @@ export function ActivityRecordForm({
     });
   }
 
+  /** 여러 사진 업로드 — 허용 형식만 추가하고, 미지원 형식은 안내 메시지로 알림 */
   async function handleFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
     setUploading(true);
     setError(null);
+    const rejected: string[] = [];
     try {
       const uploads: UploadedImage[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList.item(i);
-        if (!file || !file.type.startsWith("image/")) continue;
+        if (!file) continue;
+        if (!isAllowedImage(file)) {
+          rejected.push(file.name);
+          continue;
+        }
         const dataUrl = await fileToCompressedDataUrl(file);
         uploads.push({
           id: `p-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
@@ -219,12 +309,59 @@ export function ActivityRecordForm({
         });
         runAnalysis(next);
       }
+      if (rejected.length > 0) {
+        setError(
+          `지원하지 않는 형식이에요 (${ALLOWED_EXT_LABEL}만 가능): ${rejected.join(", ")}`,
+        );
+      }
     } catch (e) {
+      console.error("[활동기록] 사진 업로드 실패", e);
       setError(e instanceof Error ? e.message : "업로드 실패");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  /** 특정 사진 1장을 새 사진으로 교체 (id 유지 → 분류·매칭 보존) */
+  async function handleReplaceFile(fileList: FileList | null) {
+    const targetId = replacingIdRef.current;
+    const file = fileList?.item(0) ?? null;
+    replacingIdRef.current = null;
+    if (replaceInputRef.current) replaceInputRef.current.value = "";
+    if (!targetId || !file) return;
+    if (!isAllowedImage(file)) {
+      setError(`지원하지 않는 형식이에요 (${ALLOWED_EXT_LABEL}만 가능): ${file.name}`);
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      const dataUrl = await fileToCompressedDataUrl(file);
+      const next = images.map((p) =>
+        p.id === targetId ? { ...p, dataUrl, name: file.name } : p,
+      );
+      setImages(next);
+      runAnalysis(next);
+    } catch (e) {
+      console.error("[활동기록] 사진 재업로드 실패", e);
+      setError(e instanceof Error ? e.message : "재업로드 실패");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  /** 사진별 재업로드 버튼 → 단일 선택 input 열기 */
+  function startReplace(id: string) {
+    replacingIdRef.current = id;
+    replaceInputRef.current?.click();
+  }
+
+  /** 드래그 앤 드롭으로 사진 업로드 */
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
   }
 
   function removeImage(id: string) {
@@ -242,6 +379,16 @@ export function ActivityRecordForm({
       next.delete(id);
       return next;
     });
+    setPhotoAssignments((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setPhotoActivityTags((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }
 
   function togglePhotoSelection(id: string) {
@@ -253,11 +400,33 @@ export function ActivityRecordForm({
     });
   }
 
-  function setMatch(description: string, childId: string) {
-    setClusterMatches((prev) => {
+  /** 사진을 특정 원아에게 배정/해제 (같은 원아 재클릭 시 해제) */
+  function togglePhotoForChild(photoId: string, childId: string) {
+    if (!childId) return;
+    setPhotoAssignments((prev) => {
       const next = { ...prev };
-      if (childId) next[description] = childId;
-      else delete next[description];
+      if (next[photoId] === childId) delete next[photoId];
+      else next[photoId] = childId;
+      return next;
+    });
+  }
+
+  /** AI 그룹(외형 묶음) 전체를 선택된 원아에게 일괄 배정 */
+  function assignClusterToChild(photoIds: string[], childId: string) {
+    if (!childId) return;
+    setPhotoAssignments((prev) => {
+      const next = { ...prev };
+      for (const pid of photoIds) next[pid] = childId;
+      return next;
+    });
+  }
+
+  /** 사진별 활동 태그 설정 */
+  function setActivityTag(photoId: string, tag: string) {
+    setPhotoActivityTags((prev) => {
+      const next = { ...prev };
+      if (tag.trim()) next[photoId] = tag;
+      else delete next[photoId];
       return next;
     });
   }
@@ -268,58 +437,65 @@ export function ActivityRecordForm({
   );
   const clusteredIds = new Set(clusters.flatMap((c) => c.photoIds));
   const unclustered = images.filter((p) => !clusteredIds.has(p.id));
-  const usedChildIds = new Set(Object.values(clusterMatches).filter(Boolean));
-  const matchedCount = clusters.filter(
-    (c) => clusterMatches[c.description],
-  ).length;
 
-  // step gating
-  const canGoStep2 = !!analysis && images.length > 0;
-  const canGoStep3 = canGoStep2 && matchedCount > 0;
+  /** 특정 원아에게 배정된 사진 목록 */
+  const photosForChild = (childId: string) =>
+    images.filter((p) => photoAssignments[p.id] === childId);
 
-  // sessionStorage 자동 저장
+  // 사진이 1장 이상 배정된 원아 집합
+  const matchedChildIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const cid of Object.values(photoAssignments)) {
+      if (cid) ids.add(cid);
+    }
+    return ids;
+  }, [photoAssignments]);
+  const matchedCount = matchedChildIds.size;
+  const assignedPhotoCount = Object.keys(photoAssignments).length;
+
+  // 핸드오프 자동 저장 (sessionStorage 주 + localStorage 백업)
+  // 원아별로 사진을 묶어 clusters 형태로 저장 → 2단계·한줄기록·알림장·관찰일지가 읽음
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!analysis && clusters.length === 0) {
-      window.sessionStorage.removeItem(DAILY_ACTIVITY_STORAGE_KEY);
+    if (!analysis && Object.keys(photoAssignments).length === 0) {
+      clearHandoff();
       return;
     }
     const now = new Date();
     const isoDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const lookup = new Map(images.map((p) => [p.id, p]));
+    const byChild = new Map<string, UploadedImage[]>();
+    for (const img of images) {
+      const cid = photoAssignments[img.id];
+      if (!cid) continue;
+      const arr = byChild.get(cid) ?? [];
+      arr.push(img);
+      byChild.set(cid, arr);
+    }
+    const childNameById = new Map(children.map((c) => [c.id, c.name]));
     const payload: DailyActivityHandoff = {
       classroomName,
       date: isoDate,
       savedAt: Date.now(),
       analysis,
-      clusters: clusters.map((c) => ({
-        description: c.description,
-        childId: clusterMatches[c.description] || null,
-        photos: c.photoIds
-          .map((pid) => lookup.get(pid))
-          .filter((p): p is UploadedImage => !!p)
-          .map((p) => ({ id: p.id, dataUrl: p.dataUrl })),
+      clusters: Array.from(byChild.entries()).map(([childId, photos]) => ({
+        description: childNameById.get(childId) ?? "원아",
+        childId,
+        photos: photos.map((p) => ({
+          id: p.id,
+          dataUrl: p.dataUrl,
+          activity: photoActivityTags[p.id] ?? null,
+        })),
       })),
     };
-    try {
-      window.sessionStorage.setItem(
-        DAILY_ACTIVITY_STORAGE_KEY,
-        JSON.stringify(payload),
-      );
-    } catch {
-      // 용량 초과 시 무시
-    }
-  }, [analysis, clusters, clusterMatches, classroomName, images]);
-
-  // step 3 — 원아 매칭 헬퍼
-  const matchedChildIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const c of clusters) {
-      const cid = clusterMatches[c.description];
-      if (cid) ids.add(cid);
-    }
-    return ids;
-  }, [clusters, clusterMatches]);
+    saveHandoff(payload);
+  }, [
+    analysis,
+    photoAssignments,
+    photoActivityTags,
+    classroomName,
+    images,
+    children,
+  ]);
 
   function generateAllSummaries() {
     if (!analysis) {
@@ -329,13 +505,18 @@ export function ActivityRecordForm({
     if (children.length === 0) return;
     setError(null);
     const childPayload = children.map((c) => {
-      const matchedCluster = clusters.find(
-        (cl) => clusterMatches[cl.description] === c.id,
+      const photos = photosForChild(c.id);
+      const tags = Array.from(
+        new Set(
+          photos
+            .map((p) => photoActivityTags[p.id]?.trim())
+            .filter((t): t is string => !!t),
+        ),
       );
       return {
         name: c.name,
-        photoCount: matchedCluster?.photoIds.length ?? 0,
-        clusterDescription: matchedCluster?.description ?? null,
+        photoCount: photos.length,
+        clusterDescription: tags.length ? tags.join(", ") : null,
       };
     });
     startTransition(async () => {
@@ -364,13 +545,112 @@ export function ActivityRecordForm({
     });
   }
 
+  function isoToday(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+
+  /** 원아별 분류 사진을 Supabase 에 저장 (성공 여부 반환) */
+  async function saveToDb(): Promise<boolean> {
+    if (!classroomId) {
+      setError("담당 반 정보가 없어 저장할 수 없어요.");
+      return false;
+    }
+    const groups = children
+      .map((c) => ({
+        childId: c.id,
+        photos: photosForChild(c.id).map((p) => ({
+          dataUrl: p.dataUrl,
+          activity: photoActivityTags[p.id] ?? null,
+        })),
+      }))
+      .filter((g) => g.photos.length > 0);
+    // 배정된 사진이 없으면 저장 없이 통과
+    if (groups.length === 0) return true;
+
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await withTimeout(
+        saveActivityRecordAction({
+          classroomId,
+          teacherId,
+          date: isoToday(),
+          activityTitle: analysis?.activity_title ?? null,
+          children: groups,
+        }),
+        SAVE_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        setError(`저장 실패: ${res.error}`);
+        return false;
+      }
+      setSaveToast(
+        `원아 ${res.savedChildren}명 · 사진 ${res.savedPhotos}장 저장 완료`,
+      );
+      window.setTimeout(() => setSaveToast(null), 2500);
+      return true;
+    } catch (e) {
+      console.error("[활동기록] 저장 호출 실패", e);
+      if (e instanceof Error && e.message === "TIMEOUT") {
+        setError(
+          "저장 응답이 10초를 넘어 취소했어요. 네트워크를 확인 후 다시 시도해주세요.",
+        );
+      } else {
+        setError(e instanceof Error ? e.message : "저장 실패");
+      }
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** DB에 저장된 원아별 사진 다시 불러오기 (저장 검증용) */
+  function refreshSavedPhotos() {
+    if (!classroomId) return;
+    setLoadingSaved(true);
+    startTransition(async () => {
+      const res = await loadSavedChildPhotosAction({
+        classroomId,
+        date: isoToday(),
+      });
+      setLoadingSaved(false);
+      if (res.ok) {
+        setSavedPhotosByChild(res.byChild);
+        setSavedLoaded(true);
+      } else {
+        setError(`저장 사진 조회 실패: ${res.error}`);
+      }
+    });
+  }
+
   function tryGoStep(target: StepNumber) {
     setError(null);
+    // 1 → 2 단계 이동 시 원아별 분류 사진을 DB 에 저장
+    if (step === 1 && target === 2) {
+      void saveToDb().then((ok) => {
+        if (ok) setStep(2);
+      });
+      return;
+    }
     setStep(target);
   }
 
-  const matchedChildren = children.filter((c) => matchedChildIds.has(c.id));
-  const otherChildren = children.filter((c) => !matchedChildIds.has(c.id));
+  /** 분류 팝업 열기 — 첫 원아 자동 선택 */
+  function openClassifyModal() {
+    if (!selectedChildId && children.length > 0) {
+      setSelectedChildId(children[0].id);
+    }
+    setShowClusterModal(true);
+  }
+
+  // 분류 팝업용 파생값
+  const selectedChild =
+    children.find((c) => c.id === selectedChildId) ?? children[0] ?? null;
+  const selectedIdx = selectedChild
+    ? children.findIndex((c) => c.id === selectedChild.id)
+    : -1;
+  const ACTIVITY_DATALIST_ID = "activity-tag-suggestions";
 
   return (
     <div className="space-y-6">
@@ -470,17 +750,35 @@ export function ActivityRecordForm({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
             multiple
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
+          />
+          <input
+            ref={replaceInputRef}
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={(e) => handleReplaceFile(e.target.files)}
           />
           {images.length === 0 ? (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
               disabled={uploading}
-              className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 px-6 py-10 transition-colors hover:border-emerald-300 hover:bg-emerald-50/50"
+              className={cn(
+                "flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 transition-colors",
+                dragOver
+                  ? "border-emerald-400 bg-emerald-50"
+                  : "border-slate-200 bg-slate-50/50 hover:border-emerald-300 hover:bg-emerald-50/50",
+              )}
             >
               {uploading ? (
                 <Loader2 className="h-7 w-7 animate-spin text-emerald-500" />
@@ -490,16 +788,32 @@ export function ActivityRecordForm({
               <p className="text-sm text-slate-600">
                 {uploading
                   ? "이미지 변환 중…"
-                  : "사진을 클릭해서 업로드 (여러 장 가능)"}
+                  : dragOver
+                    ? "여기에 놓으면 업로드됩니다"
+                    : "사진을 클릭하거나 끌어다 놓아 업로드 (여러 장 가능)"}
               </p>
+              <p className="text-[11px] text-slate-400">{ALLOWED_EXT_LABEL} 형식</p>
             </button>
           ) : (
-            <div className="rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-3">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              className={cn(
+                "rounded-xl border-2 border-dashed p-3 transition-colors",
+                dragOver
+                  ? "border-emerald-400 bg-emerald-50"
+                  : "border-slate-200 bg-slate-50/50",
+              )}
+            >
               <div className="mb-2 flex items-center justify-between gap-2">
                 <p className="text-[11px] font-medium text-slate-500">
-                  사진 · {images.length}장 ·{" "}
+                  총 {images.length}장 /{" "}
                   <span className="text-emerald-700">
-                    {selectedPhotoIds.size}장 선택됨
+                    선택된 {selectedPhotoIds.size}장
                   </span>
                 </p>
                 <div className="flex items-center gap-2">
@@ -562,6 +876,15 @@ export function ActivityRecordForm({
                       >
                         <X className="h-3 w-3" />
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => startReplace(p.id)}
+                        className="absolute bottom-1 left-1 grid h-5 w-5 place-items-center rounded-full bg-white/90 text-slate-500 opacity-0 transition-opacity hover:text-emerald-600 group-hover:opacity-100"
+                        aria-label="재업로드"
+                        title="이 사진 교체"
+                      >
+                        <RotateCw className="h-3 w-3" />
+                      </button>
                     </div>
                   );
                 })}
@@ -578,22 +901,26 @@ export function ActivityRecordForm({
             </div>
           )}
 
-          {/* 선택된 사진 액션 바 */}
-          {images.length > 0 && selectedPhotoIds.size > 0 && (
+          {/* 사진 분류하기 — 3-pane 팝업 열기 */}
+          {images.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-4 py-3 ring-1 ring-slate-100">
               <p className="text-xs text-slate-600">
-                <strong className="text-slate-900">
-                  {selectedPhotoIds.size}장
-                </strong>{" "}
-                선택됨 · 다음 작업을 선택하세요
+                업로드한 사진을{" "}
+                <strong className="text-slate-900">원아별로 분류</strong>해
+                보세요.
+                {assignedPhotoCount > 0 && (
+                  <span className="ml-1 text-emerald-700">
+                    (배정 {assignedPhotoCount}장 · 원아 {matchedCount}명)
+                  </span>
+                )}
               </p>
               <button
                 type="button"
-                onClick={() => setShowClusterModal(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+                onClick={openClassifyModal}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
               >
                 <Users className="h-3.5 w-3.5" />
-                아이 사진 분류
+                사진 분류하기
               </button>
             </div>
           )}
@@ -727,29 +1054,37 @@ export function ActivityRecordForm({
         </section>
       )}
 
-      {/* 아이 사진 분류 — 팝업 */}
+      {/* 사진 분류 — 3-pane 팝업 (좌:원아목록 / 중앙:선택아이 사진+태그 / 우:전체사진) */}
       {showClusterModal && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-3 sm:items-center sm:p-6"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-2 sm:items-center sm:p-6"
           onClick={() => setShowClusterModal(false)}
         >
+          {/* 활동 태그 추천 (AI 키워드) */}
+          <datalist id={ACTIVITY_DATALIST_ID}>
+            {(analysis?.keywords ?? []).map((k) => (
+              <option key={k} value={k} />
+            ))}
+          </datalist>
+
           <div
-            className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            className="flex h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+            {/* 헤더 */}
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
               <div>
                 <p className="flex items-center gap-1.5 text-sm font-bold text-slate-900">
                   <Sparkles className="h-4 w-4 text-emerald-500" />
-                  아이 사진 분류
+                  사진 분류
                 </p>
                 <p className="mt-0.5 text-[11px] text-slate-500">
-                  같은 옷·외형으로 묶인 사진 그룹에 원아를 선택해 매칭하세요.
+                  원아를 고르고, 오른쪽 사진을 눌러 그 원아에게 배정하세요. 사진별 활동 태그도 달 수 있어요.
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-                  매칭 {matchedCount}/{clusters.length}
+                  배정 {assignedPhotoCount}/{images.length}장 · 원아 {matchedCount}명
                 </span>
                 <button
                   type="button"
@@ -762,138 +1097,277 @@ export function ActivityRecordForm({
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5">
-              {clusters.length === 0 ? (
-                <p className="rounded-xl bg-slate-50 py-10 text-center text-sm text-slate-400">
-                  {isPending
-                    ? "AI가 사진을 그룹핑하고 있어요…"
-                    : "그룹핑 결과가 없어요. 1단계에서 사진을 업로드해 주세요."}
+            {/* 본문 3구역 */}
+            <div className="grid min-h-0 flex-1 grid-cols-1 sm:grid-cols-[180px_minmax(0,1fr)_180px]">
+              {/* 좌측: 원아 목록 */}
+              <div className="min-h-0 overflow-y-auto border-b border-slate-100 p-2 sm:border-b-0 sm:border-r">
+                <p className="px-2 py-1 text-[11px] font-semibold text-slate-500">
+                  원아 {children.length}명
                 </p>
-              ) : (
-                <ul className="space-y-2">
-                  {clusters.map((cluster, idx) => {
-                    const matchedId = clusterMatches[cluster.description] ?? "";
-                    const matched = children.find((c) => c.id === matchedId);
+                <ul className="space-y-0.5">
+                  {children.map((c) => {
+                    const count = photosForChild(c.id).length;
+                    const active = selectedChild?.id === c.id;
                     return (
-                      <li
-                        key={cluster.description}
-                        className={cn(
-                          "rounded-xl p-3 ring-1 transition-colors",
-                          matched
-                            ? "bg-emerald-50/60 ring-emerald-200"
-                            : "bg-slate-50 ring-slate-100",
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white text-[11px] font-bold text-slate-600 ring-1 ring-slate-200">
-                              {idx + 1}
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedChildId(c.id)}
+                          className={cn(
+                            "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs transition-colors",
+                            active
+                              ? "bg-emerald-600 text-white"
+                              : "text-slate-700 hover:bg-slate-100",
+                          )}
+                        >
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className={cn(
+                                "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold",
+                                active
+                                  ? "bg-white/25 text-white"
+                                  : c.gender === "F"
+                                    ? "bg-rose-100 text-rose-600"
+                                    : "bg-emerald-100 text-emerald-700",
+                              )}
+                            >
+                              {c.name.charAt(0)}
                             </span>
-                            <p className="truncate text-xs font-medium text-slate-700">
-                              {cluster.description}
-                              <span className="ml-1 text-slate-400">
-                                · {cluster.photoIds.length}장
-                              </span>
-                            </p>
-                          </div>
-                          <select
-                            value={matchedId}
-                            onChange={(e) =>
-                              setMatch(cluster.description, e.target.value)
-                            }
-                            className={cn(
-                              "h-8 max-w-[140px] rounded-lg border bg-white px-2 text-xs focus:outline-none",
-                              matched
-                                ? "border-emerald-300 text-emerald-700 focus:border-emerald-400"
-                                : "border-slate-200 text-slate-700 focus:border-emerald-400",
-                            )}
-                          >
-                            <option value="">원아 선택…</option>
-                            {children.map((c) => {
-                              const isUsedElsewhere =
-                                usedChildIds.has(c.id) && matchedId !== c.id;
-                              return (
-                                <option
-                                  key={c.id}
-                                  value={c.id}
-                                  disabled={isUsedElsewhere}
-                                >
-                                  {c.name}
-                                  {isUsedElsewhere ? " (다른 그룹)" : ""}
-                                </option>
-                              );
-                            })}
-                          </select>
-                        </div>
-
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {cluster.photoIds.map((pid) => {
-                            const p = imageById.get(pid);
-                            if (!p) return null;
-                            return (
-                              <div
-                                key={pid}
-                                className={cn(
-                                  "h-14 w-14 overflow-hidden rounded-lg ring-1",
-                                  matched
-                                    ? "ring-emerald-300"
-                                    : "ring-slate-200",
-                                )}
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={p.dataUrl}
-                                  alt={p.name}
-                                  className="h-full w-full object-cover"
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {matched && (
-                          <p className="mt-2 flex items-center gap-1 text-[11px] font-medium text-emerald-700">
-                            <Check className="h-3 w-3" strokeWidth={3} />
-                            <span>{matched.name}</span>으로 매칭됨
-                          </p>
-                        )}
+                            <span className="truncate font-medium">{c.name}</span>
+                          </span>
+                          {count > 0 && (
+                            <span
+                              className={cn(
+                                "shrink-0 rounded-full px-1.5 text-[10px] font-bold",
+                                active
+                                  ? "bg-white/25 text-white"
+                                  : "bg-emerald-100 text-emerald-700",
+                              )}
+                            >
+                              {count}
+                            </span>
+                          )}
+                        </button>
                       </li>
                     );
                   })}
+                </ul>
+              </div>
 
-                  {unclustered.length > 0 && (
-                    <li className="rounded-xl border border-dashed border-slate-200 bg-white p-3">
-                      <p className="text-[11px] font-medium text-slate-500">
-                        그룹에 속하지 않는 사진 · {unclustered.length}장
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {unclustered.map((p) => (
-                          <div
-                            key={p.id}
-                            className="h-14 w-14 overflow-hidden rounded-lg ring-1 ring-slate-200"
-                          >
+              {/* 중앙: 선택 원아의 사진 + 사진별 활동 태그 */}
+              <div className="flex min-h-0 flex-col">
+                {/* 원아 전환 네비게이션 */}
+                <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
+                  <button
+                    type="button"
+                    disabled={selectedIdx <= 0}
+                    onClick={() =>
+                      selectedIdx > 0 &&
+                      setSelectedChildId(children[selectedIdx - 1].id)
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-600 enabled:hover:bg-slate-100 disabled:text-slate-300"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    이전 원아
+                  </button>
+                  <p className="truncate text-sm font-bold text-slate-900">
+                    {selectedChild?.name ?? "원아 없음"}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={selectedIdx < 0 || selectedIdx >= children.length - 1}
+                    onClick={() =>
+                      selectedIdx < children.length - 1 &&
+                      setSelectedChildId(children[selectedIdx + 1].id)
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-600 enabled:hover:bg-slate-100 disabled:text-slate-300"
+                  >
+                    다음 원아
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {!selectedChild ? (
+                    <p className="rounded-xl bg-slate-50 py-10 text-center text-sm text-slate-400">
+                      등록된 원아가 없어요.
+                    </p>
+                  ) : photosForChild(selectedChild.id).length === 0 ? (
+                    <p className="rounded-xl bg-slate-50 py-10 text-center text-xs text-slate-400">
+                      오른쪽 “전체 사진”에서 사진을 눌러
+                      <br />
+                      <strong className="text-slate-600">
+                        {selectedChild.name}
+                      </strong>{" "}
+                      에게 배정하세요.
+                    </p>
+                  ) : (
+                    <ul className="grid grid-cols-2 gap-3">
+                      {photosForChild(selectedChild.id).map((p) => (
+                        <li
+                          key={p.id}
+                          className="overflow-hidden rounded-xl ring-1 ring-slate-200"
+                        >
+                          <div className="relative aspect-square w-full">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={p.dataUrl}
                               alt={p.name}
                               className="h-full w-full object-cover"
                             />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                togglePhotoForChild(p.id, selectedChild.id)
+                              }
+                              className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-white/90 text-slate-500 shadow hover:text-rose-500"
+                              aria-label="배정 해제"
+                              title="이 원아에서 제외"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
                           </div>
+                          <div className="flex items-center gap-1 p-1.5">
+                            <Tag className="h-3 w-3 shrink-0 text-slate-400" />
+                            <input
+                              list={ACTIVITY_DATALIST_ID}
+                              value={photoActivityTags[p.id] ?? ""}
+                              onChange={(e) =>
+                                setActivityTag(p.id, e.target.value)
+                              }
+                              placeholder="활동 태그"
+                              className="h-7 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-800 focus:border-emerald-400 focus:outline-none"
+                            />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              {/* 우측: 오늘 올린 전체 사진 (클릭 시 선택 원아에게 배정) */}
+              <div className="min-h-0 overflow-y-auto border-t border-slate-100 p-2 sm:border-l sm:border-t-0">
+                <p className="px-1 py-1 text-[11px] font-semibold text-slate-500">
+                  전체 사진 {images.length}장
+                </p>
+                {isPending && clusters.length === 0 && (
+                  <p className="px-1 pb-1 text-[10px] text-emerald-700">
+                    AI 그룹핑 중…
+                  </p>
+                )}
+                <div className="space-y-2">
+                  {clusters.map((cluster, idx) => (
+                    <div key={cluster.description}>
+                      <div className="mb-1 flex items-center justify-between gap-1 px-0.5">
+                        <p className="truncate text-[10px] font-medium text-slate-500">
+                          {idx + 1}. {cluster.description}
+                        </p>
+                        {selectedChild && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              assignClusterToChild(
+                                cluster.photoIds,
+                                selectedChild.id,
+                              )
+                            }
+                            className="shrink-0 rounded bg-emerald-50 px-1 text-[9px] font-semibold text-emerald-700 hover:bg-emerald-100"
+                            title={`이 그룹 전체를 ${selectedChild.name}에게 배정`}
+                          >
+                            전체 배정
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {cluster.photoIds.map((pid) => {
+                          const p = imageById.get(pid);
+                          if (!p) return null;
+                          return (
+                            <RightPaneThumb
+                              key={pid}
+                              photo={p}
+                              assignedChildId={photoAssignments[pid]}
+                              selectedChildId={selectedChild?.id ?? ""}
+                              childName={
+                                photoAssignments[pid]
+                                  ? children.find(
+                                      (c) => c.id === photoAssignments[pid],
+                                    )?.name ?? null
+                                  : null
+                              }
+                              onClick={() =>
+                                selectedChild &&
+                                togglePhotoForChild(pid, selectedChild.id)
+                              }
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+
+                  {unclustered.length > 0 && (
+                    <div>
+                      <p className="mb-1 px-0.5 text-[10px] font-medium text-slate-400">
+                        미분류 {unclustered.length}장
+                      </p>
+                      <div className="grid grid-cols-3 gap-1">
+                        {unclustered.map((p) => (
+                          <RightPaneThumb
+                            key={p.id}
+                            photo={p}
+                            assignedChildId={photoAssignments[p.id]}
+                            selectedChildId={selectedChild?.id ?? ""}
+                            childName={
+                              photoAssignments[p.id]
+                                ? children.find(
+                                    (c) => c.id === photoAssignments[p.id],
+                                  )?.name ?? null
+                                : null
+                            }
+                            onClick={() =>
+                              selectedChild &&
+                              togglePhotoForChild(p.id, selectedChild.id)
+                            }
+                          />
                         ))}
                       </div>
-                    </li>
+                    </div>
                   )}
-                </ul>
-              )}
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 border-t border-slate-100 p-4">
+            {/* 하단 네비게이션 */}
+            <div className="flex items-center justify-between gap-2 border-t border-slate-100 p-3">
               <button
                 type="button"
                 onClick={() => setShowClusterModal(false)}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
               >
-                완료
+                닫기
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowClusterModal(false);
+                  tryGoStep(2);
+                }}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    저장 중…
+                  </>
+                ) : (
+                  <>
+                    다음 단계: 원아 활동 기록
+                    <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -987,12 +1461,7 @@ export function ActivityRecordForm({
             ) : (
               <ul className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-100">
                 {children.map((c) => {
-                  const matchedCluster = clusters.find(
-                    (cl) => clusterMatches[cl.description] === c.id,
-                  );
-                  const photos = (matchedCluster?.photoIds ?? [])
-                    .map((pid) => imageById.get(pid))
-                    .filter((p): p is UploadedImage => !!p);
+                  const photos = photosForChild(c.id);
                   const value = savedMemos[c.id] ?? "";
                   const filled = value.trim().length > 0;
                   return (
@@ -1074,6 +1543,88 @@ export function ActivityRecordForm({
               </ul>
             )}
           </section>
+
+          {/* DB 저장 확인 — 원아별로 저장된 사진 다시 불러오기 */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-5">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-900">
+                  DB 저장 확인
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  오늘 이 반에 저장된 원아별 사진을 DB에서 다시 불러옵니다. (저장이 실제로 됐는지 검증)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={refreshSavedPhotos}
+                disabled={loadingSaved || !classroomId}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors",
+                  loadingSaved || !classroomId
+                    ? "bg-slate-100 text-slate-400"
+                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50",
+                )}
+              >
+                {loadingSaved ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    불러오는 중…
+                  </>
+                ) : (
+                  <>
+                    <RotateCw className="h-3.5 w-3.5" />
+                    새로고침
+                  </>
+                )}
+              </button>
+            </div>
+
+            {!savedLoaded ? (
+              <p className="rounded-xl bg-slate-50 py-8 text-center text-xs text-slate-400">
+                아직 불러오지 않았어요. 새로고침을 눌러주세요.
+              </p>
+            ) : Object.keys(savedPhotosByChild).length === 0 ? (
+              <p className="rounded-xl bg-slate-50 py-8 text-center text-xs text-slate-400">
+                저장된 원아별 사진이 없어요. 1단계에서 사진을 분류·배정한 뒤 “다음 단계”로 저장해 주세요.
+              </p>
+            ) : (
+              <ul className="space-y-3">
+                {children
+                  .filter((c) => (savedPhotosByChild[c.id]?.length ?? 0) > 0)
+                  .map((c) => {
+                    const urls = savedPhotosByChild[c.id] ?? [];
+                    return (
+                      <li key={c.id} className="flex gap-3">
+                        <div className="w-16 shrink-0">
+                          <p className="truncate text-[11px] font-semibold text-slate-800">
+                            {c.name}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            {urls.length}장
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {urls.map((url, i) => (
+                            <div
+                              key={`${c.id}-${i}`}
+                              className="h-12 w-12 overflow-hidden rounded ring-1 ring-emerald-200"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={url}
+                                alt={`${c.name} 저장 사진 ${i + 1}`}
+                                className="h-full w-full object-cover"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </li>
+                    );
+                  })}
+              </ul>
+            )}
+          </section>
         </>
       )}
 
@@ -1095,10 +1646,20 @@ export function ActivityRecordForm({
           <button
             type="button"
             onClick={() => tryGoStep((step + 1) as StepNumber)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700"
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60"
           >
-            다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
-            <ArrowRight className="h-4 w-4" />
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                저장 중…
+              </>
+            ) : (
+              <>
+                다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
+                <ArrowRight className="h-4 w-4" />
+              </>
+            )}
           </button>
         ) : (
           <span className="text-xs text-slate-400">마지막 단계</span>
@@ -1128,53 +1689,60 @@ export function ActivityRecordForm({
   );
 }
 
-function ChildChip({
-  child,
-  isSelected,
-  isMatched,
-  isDone,
+/**
+ * 분류 팝업 우측 "전체 사진" 썸네일.
+ * 클릭하면 현재 선택된 원아에게 배정/해제. 배정된 사진은 표시(누구에게).
+ */
+function RightPaneThumb({
+  photo,
+  assignedChildId,
+  selectedChildId,
+  childName,
   onClick,
 }: {
-  child: ChildOption;
-  isSelected: boolean;
-  isMatched: boolean;
-  isDone: boolean;
+  photo: UploadedImage;
+  assignedChildId: string | undefined;
+  selectedChildId: string;
+  childName: string | null;
   onClick: () => void;
 }) {
+  const assignedToSelected =
+    !!assignedChildId && assignedChildId === selectedChildId;
+  const assignedToOther =
+    !!assignedChildId && assignedChildId !== selectedChildId;
   return (
     <button
       type="button"
       onClick={onClick}
+      title={
+        childName
+          ? `${childName}에게 배정됨`
+          : "클릭하면 선택한 원아에게 배정"
+      }
       className={cn(
-        "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all",
-        isSelected
-          ? "bg-emerald-600 text-white shadow"
-          : isMatched
-            ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
-            : "bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100",
+        "relative block aspect-square w-full overflow-hidden rounded-lg ring-1 transition-all",
+        assignedToSelected
+          ? "ring-2 ring-emerald-500 ring-offset-1"
+          : assignedToOther
+            ? "opacity-60 ring-slate-300"
+            : "ring-slate-200 hover:ring-emerald-300",
       )}
     >
-      <span
-        className={cn(
-          "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold",
-          isSelected
-            ? "bg-white/25 text-white"
-            : child.gender === "F"
-              ? "bg-rose-100 text-rose-600"
-              : "bg-emerald-100 text-emerald-700",
-        )}
-      >
-        {child.name.charAt(0)}
-      </span>
-      {child.name}
-      {isDone && (
-        <Check
-          className={cn(
-            "h-3 w-3",
-            isSelected ? "text-white" : "text-emerald-600",
-          )}
-          strokeWidth={3}
-        />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={photo.dataUrl}
+        alt={photo.name}
+        className="h-full w-full object-cover"
+      />
+      {assignedToSelected && (
+        <span className="pointer-events-none absolute right-0.5 top-0.5 grid h-4 w-4 place-items-center rounded-full bg-emerald-600 text-white shadow">
+          <Check className="h-2.5 w-2.5" strokeWidth={3} />
+        </span>
+      )}
+      {assignedToOther && childName && (
+        <span className="pointer-events-none absolute bottom-0 left-0 right-0 truncate bg-slate-900/60 px-1 text-[8px] text-white">
+          {childName}
+        </span>
       )}
     </button>
   );
