@@ -6,8 +6,10 @@
  *     근거: Rothbart CBQ 3요인(외향/활발성·부정정서·의도적 통제) + Thomas&Chess(적응성·활동성)
  *     · Rothbart CBQ: https://research.bowdoin.edu/rothbart-temperament-questionnaires/instrument-descriptions/the-childrens-behavior-questionnaire/
  *     · Thomas & Chess(NYLS): https://socialsci.libretexts.org/Bookshelves/Human_Development/Lifespan_Development_(OpenStax)/04:_Social_and_Emotional_Development_in_Infants_and_Toddlers_(Birth_to_Age_3)/4.02:_Temperament_and_Personality_in_Infants_and_Toddlers
- * - parent(부모 5칼럼): 가정에서의모습·강점재능·우려요청·또래형제관계·양육방식
- *     ※ 현재 시드에 부모 제공 정보가 없어 값은 비어 있음(""). 기획문서/부모상담 입력 시 채움.
+ * - parent(부모 5칼럼 = 부모 소통 성향): 소통톤선호·민감주제·안심강조점·표현수위·피드백선호
+ *     용도: 학부모용 문서의 '민감·안전 표현 필터' 입력값(톤·표현 조정).
+ *     ※ 보호자 단위 속성 — 실DB 전환 시 parent-keyed(parent_child/profiles)로 이전.
+ *     ※ 현재 값은 비어 있음(""). 보호자 상담 입력 시 채움.
  * - sensitivity(기질 예민도): 상/중/하
  *     근거: Pluess 외(2018) Highly Sensitive Child — 저/중/고 민감성 3그룹
  *     https://www.researchgate.net/publication/319974199_Environmental_Sensitivity_in_Children_Development_of_the_Highly_Sensitive_Child_Scale_and_Identification_of_Sensitivity_Groups
@@ -26,13 +28,22 @@ export type Temperament = {
   자기조절: string; // 집중·주의지속·차례 기다리기 (Effortful Control)
 };
 
-/** 부모 5칼럼 (부모 제공 정보 — 현재 미입력) */
+/**
+ * 부모 5칼럼 — "부모 소통 성향" (민감·안전 표현 필터용)
+ *
+ * 용도: 알림장 등 학부모용 문서 생성 시, 이 성향에 맞춰 톤·표현을 조정하는
+ *       '민감·안전 표현 필터'의 입력값. (필터 자체는 추후 알림장 단계에서 연결)
+ *
+ * ※ 본래 "보호자(부모) 단위 속성"이다. 현재는 데모·TS 구조상 원아(child) 프로필에
+ *    얹어 두었으나, 실DB 전환 시 parent_child / profiles(role=parent) 기반의
+ *    "보호자 단위" 테이블로 이전해야 한다 (한 원아에 보호자가 여럿일 수 있음).
+ */
 export type ParentInfo = {
-  가정에서의모습: string;
-  강점재능: string;
-  우려요청: string;
-  또래형제관계: string;
-  양육방식: string;
+  소통톤선호: string; // 예: 따뜻하게 / 정중하게 / 간결하게
+  민감주제: string; // 피해야 할 표현·주제 (예: 발달 비교, 부정 단정)
+  안심강조점: string; // 강조해주길 원하는 것 (예: 작은 성취, 또래 관계)
+  표현수위: string; // 직설적 vs 완곡한 표현 선호
+  피드백선호: string; // 연락·소통 방식 (예: 짧게 자주 / 주 1회 상세)
 };
 
 /** 기질 예민도 (Pluess 3그룹) */
@@ -57,20 +68,20 @@ export const TEMPERAMENT_COLUMNS = [
 ] as const;
 
 export const PARENT_COLUMNS = [
-  "가정에서의모습",
-  "강점재능",
-  "우려요청",
-  "또래형제관계",
-  "양육방식",
+  "소통톤선호",
+  "민감주제",
+  "안심강조점",
+  "표현수위",
+  "피드백선호",
 ] as const;
 
-/** 부모 칼럼 빈 값 (입력 대기) */
+/** 부모 칼럼 빈 값 (입력 대기 — 보호자 상담 시 채움) */
 const EMPTY_PARENT: ParentInfo = {
-  가정에서의모습: "",
-  강점재능: "",
-  우려요청: "",
-  또래형제관계: "",
-  양육방식: "",
+  소통톤선호: "",
+  민감주제: "",
+  안심강조점: "",
+  표현수위: "",
+  피드백선호: "",
 };
 
 export const CHILDREN_PROFILES: ChildProfile[] = [
