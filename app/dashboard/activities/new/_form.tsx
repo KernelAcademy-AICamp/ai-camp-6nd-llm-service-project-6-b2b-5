@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   ChevronLeft,
@@ -18,7 +19,6 @@ import {
 import { cn } from "@/lib/utils";
 import {
   analyzePhotosAction,
-  clusterPhotosAction,
   generateChildSummariesAction,
   saveActivityRecordAction,
   loadSavedChildPhotosAction,
@@ -45,11 +45,6 @@ type UploadedImage = {
   name: string;
 };
 
-type PhotoClusterUI = {
-  description: string;
-  photoIds: string[];
-};
-
 export type StepNumber = 1 | 2;
 
 const STEP_META: Record<StepNumber, { label: string; sub: string }> = {
@@ -59,6 +54,8 @@ const STEP_META: Record<StepNumber, { label: string; sub: string }> = {
 
 const MAX_IMAGE_DIM = 1280;
 const IMAGE_QUALITY = 0.82;
+/** 한 번에 업로드 가능한 최대 사진 수 */
+const MAX_PHOTOS = 100;
 
 /** 업로드 허용 이미지 MIME 타입 (jpg/jpeg/png/webp) */
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -137,6 +134,7 @@ export function ActivityRecordForm({
   classroomName,
   classroomId,
   teacherId,
+  attendanceCount,
   todayMemoHref,
   backHref,
   initialStep,
@@ -145,10 +143,12 @@ export function ActivityRecordForm({
   classroomName: string;
   classroomId: string;
   teacherId: string;
+  attendanceCount: number; // 오늘 출석 인원 수 (퇴소·미출석 제외)
   todayMemoHref: string;
   backHref: string;
   initialStep: StepNumber;
 }) {
+  const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const replacingIdRef = useRef<string | null>(null);
@@ -161,8 +161,6 @@ export function ActivityRecordForm({
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
-  // 사진 분류 (팝업) — AI 그룹핑(외형) + 원아별 배정
-  const [clusters, setClusters] = useState<PhotoClusterUI[]>([]);
   // photoId -> childId (원아별 사진 배정). 3-pane 팝업에서 관리.
   const [photoAssignments, setPhotoAssignments] = useState<
     Record<string, string>
@@ -177,8 +175,18 @@ export function ActivityRecordForm({
   const [showClusterModal, setShowClusterModal] = useState(false);
   // 분류 팝업 좌측에서 선택된 원아
   const [selectedChildId, setSelectedChildId] = useState<string>("");
+  // 분류 팝업 작업본(draft) — 분류완료 시에만 확정본(photoAssignments/Tags)에 커밋
+  const [draftAssignments, setDraftAssignments] = useState<
+    Record<string, string>
+  >({});
+  const [draftTags, setDraftTags] = useState<Record<string, string>>({});
   // DB 저장 상태
   const [saving, setSaving] = useState(false);
+  // 저장/다음단계 게이팅: 변경 있음(dirty) / 한 번이라도 저장됨(savedOnce)
+  const [dirty, setDirty] = useState(false);
+  const [savedOnce, setSavedOnce] = useState(false);
+  // 페이지 이탈 경고 (미저장 변경 시)
+  const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   // 저장 검증 — DB에서 다시 불러온 원아별 사진(서명 URL)
   const [savedPhotosByChild, setSavedPhotosByChild] = useState<
     Record<string, string[]>
@@ -229,7 +237,7 @@ export function ActivityRecordForm({
     if (handoff.analysis) setAnalysis(handoff.analysis);
   }, []);
 
-  // 분류 팝업 열림 중 ESC 키로 닫기
+  // 분류 팝업 열림 중 ESC 키로 닫기 (작업본 폐기)
   useEffect(() => {
     if (!showClusterModal) return;
     function onKey(e: KeyboardEvent) {
@@ -238,6 +246,37 @@ export function ActivityRecordForm({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showClusterModal]);
+
+  // 미저장 변경: 업로드한 사진이 있고, 아직 저장 안 했거나 저장 후 변경됨
+  const hasUnsavedWork = images.length > 0 && (dirty || !savedOnce);
+
+  // 새로고침·탭 종료 등 하드 이탈 경고 (브라우저 기본)
+  useEffect(() => {
+    if (!hasUnsavedWork) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsavedWork]);
+
+  // 앱 내 이동(뒤로가기 등) 시 미저장이면 커스텀 경고
+  const pendingHrefRef = useRef<string | null>(null);
+  function attemptLeave(href: string) {
+    if (hasUnsavedWork) {
+      pendingHrefRef.current = href;
+      setShowLeaveDialog(true);
+    } else {
+      router.push(href);
+    }
+  }
+  function confirmLeave() {
+    setShowLeaveDialog(false);
+    const href = pendingHrefRef.current;
+    pendingHrefRef.current = null;
+    if (href) router.push(href);
+  }
 
   // 2단계 진입 시 DB 저장된 원아별 사진을 한 번 자동 조회
   useEffect(() => {
@@ -251,27 +290,18 @@ export function ActivityRecordForm({
   const dateLabel = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
 
   function runAnalysis(allImages: UploadedImage[]) {
+    // 최소 1장 이상이어야 AI 활동 분석 수행
     if (allImages.length === 0) return;
     setError(null);
     const dataUrls = allImages.map((p) => p.dataUrl);
     startTransition(async () => {
-      const [analysisResult, clusterResult] = await Promise.all([
-        analyzePhotosAction({ imageDataUrls: dataUrls }),
-        clusterPhotosAction({ imageDataUrls: dataUrls }),
-      ]);
-      if (analysisResult.ok) setAnalysis(analysisResult.analysis);
-      else setError(analysisResult.error);
-
-      if (clusterResult.ok) {
-        const nextClusters: PhotoClusterUI[] = clusterResult.clusters
-          .map((c) => ({
-            description: c.description,
-            photoIds: c.photo_indices
-              .filter((i) => i >= 0 && i < allImages.length)
-              .map((i) => allImages[i].id),
-          }))
-          .filter((c) => c.photoIds.length > 0);
-        setClusters(nextClusters);
+      // 외형 그룹핑(clusterPhotosAction)은 UI에서 제거되어 호출하지 않음(토큰 절약)
+      const analysisResult = await analyzePhotosAction({ imageDataUrls: dataUrls });
+      if (analysisResult.ok) {
+        setAnalysis(analysisResult.analysis);
+        markDirty();
+      } else {
+        setError(analysisResult.error);
       }
     });
   }
@@ -282,9 +312,19 @@ export function ActivityRecordForm({
     setUploading(true);
     setError(null);
     const rejected: string[] = [];
+    let limitHit = false;
     try {
+      const remaining = MAX_PHOTOS - images.length;
+      if (remaining <= 0) {
+        setError(`사진은 최대 ${MAX_PHOTOS}장까지 업로드할 수 있어요.`);
+        return;
+      }
       const uploads: UploadedImage[] = [];
       for (let i = 0; i < fileList.length; i++) {
+        if (uploads.length >= remaining) {
+          limitHit = true;
+          break;
+        }
         const file = fileList.item(i);
         if (!file) continue;
         if (!isAllowedImage(file)) {
@@ -313,6 +353,8 @@ export function ActivityRecordForm({
         setError(
           `지원하지 않는 형식이에요 (${ALLOWED_EXT_LABEL}만 가능): ${rejected.join(", ")}`,
         );
+      } else if (limitHit) {
+        setError(`사진은 최대 ${MAX_PHOTOS}장까지 업로드할 수 있어요. 초과분은 제외했어요.`);
       }
     } catch (e) {
       console.error("[활동기록] 사진 업로드 실패", e);
@@ -366,29 +408,22 @@ export function ActivityRecordForm({
 
   function removeImage(id: string) {
     setImages((prev) => prev.filter((p) => p.id !== id));
-    setClusters((prev) =>
-      prev
-        .map((c) => ({
-          ...c,
-          photoIds: c.photoIds.filter((x) => x !== id),
-        }))
-        .filter((c) => c.photoIds.length > 0),
-    );
     setSelectedPhotoIds((prev) => {
       const next = new Set(prev);
       next.delete(id);
       return next;
     });
-    setPhotoAssignments((prev) => {
-      const next = { ...prev };
+    // 확정본 + 작업본 모두에서 제거 (데이터 오염 방지)
+    const drop = (m: Record<string, string>) => {
+      const next = { ...m };
       delete next[id];
       return next;
-    });
-    setPhotoActivityTags((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    };
+    setPhotoAssignments(drop);
+    setPhotoActivityTags(drop);
+    setDraftAssignments(drop);
+    setDraftTags(drop);
+    markDirty();
   }
 
   function togglePhotoSelection(id: string) {
@@ -400,10 +435,10 @@ export function ActivityRecordForm({
     });
   }
 
-  /** 사진을 특정 원아에게 배정/해제 (같은 원아 재클릭 시 해제) */
+  /** (draft) 사진을 특정 원아에게 배정/해제 (같은 원아 재클릭 시 해제) */
   function togglePhotoForChild(photoId: string, childId: string) {
     if (!childId) return;
-    setPhotoAssignments((prev) => {
+    setDraftAssignments((prev) => {
       const next = { ...prev };
       if (next[photoId] === childId) delete next[photoId];
       else next[photoId] = childId;
@@ -411,19 +446,9 @@ export function ActivityRecordForm({
     });
   }
 
-  /** AI 그룹(외형 묶음) 전체를 선택된 원아에게 일괄 배정 */
-  function assignClusterToChild(photoIds: string[], childId: string) {
-    if (!childId) return;
-    setPhotoAssignments((prev) => {
-      const next = { ...prev };
-      for (const pid of photoIds) next[pid] = childId;
-      return next;
-    });
-  }
-
-  /** 사진별 활동 태그 설정 */
+  /** 분류 팝업 작업본 사진별 활동 태그 설정 (draft) */
   function setActivityTag(photoId: string, tag: string) {
-    setPhotoActivityTags((prev) => {
+    setDraftTags((prev) => {
       const next = { ...prev };
       if (tag.trim()) next[photoId] = tag;
       else delete next[photoId];
@@ -431,12 +456,10 @@ export function ActivityRecordForm({
     });
   }
 
-  const imageById = useMemo(
-    () => new Map(images.map((p) => [p.id, p])),
-    [images],
-  );
-  const clusteredIds = new Set(clusters.flatMap((c) => c.photoIds));
-  const unclustered = images.filter((p) => !clusteredIds.has(p.id));
+  /** 편집·분류 등 변경 발생 표시 → 저장 버튼 재활성 / 다음단계 비활성 */
+  function markDirty() {
+    setDirty(true);
+  }
 
   /** 특정 원아에게 배정된 사진 목록 */
   const photosForChild = (childId: string) =>
@@ -556,6 +579,7 @@ export function ActivityRecordForm({
       setError("담당 반 정보가 없어 저장할 수 없어요.");
       return false;
     }
+    // 원아별 분류는 선택사항 — 배정이 없어도 세션(활동 제목)은 저장
     const groups = children
       .map((c) => ({
         childId: c.id,
@@ -565,8 +589,6 @@ export function ActivityRecordForm({
         })),
       }))
       .filter((g) => g.photos.length > 0);
-    // 배정된 사진이 없으면 저장 없이 통과
-    if (groups.length === 0) return true;
 
     setSaving(true);
     setError(null);
@@ -585,9 +607,9 @@ export function ActivityRecordForm({
         setError(`저장 실패: ${res.error}`);
         return false;
       }
-      setSaveToast(
-        `원아 ${res.savedChildren}명 · 사진 ${res.savedPhotos}장 저장 완료`,
-      );
+      setSavedOnce(true);
+      setDirty(false);
+      setSaveToast("매일 활동 기록이 저장됐습니다.");
       window.setTimeout(() => setSaveToast(null), 2500);
       return true;
     } catch (e) {
@@ -626,44 +648,66 @@ export function ActivityRecordForm({
 
   function tryGoStep(target: StepNumber) {
     setError(null);
-    // 1 → 2 단계 이동 시 원아별 분류 사진을 DB 에 저장
-    if (step === 1 && target === 2) {
-      void saveToDb().then((ok) => {
-        if (ok) setStep(2);
-      });
-      return;
-    }
+    // 저장은 별도 '저장하기' 버튼에서만 수행 (자동저장 제거)
     setStep(target);
   }
 
   /** 분류 팝업 열기 — 첫 원아 자동 선택 */
+  /** 분류 팝업 열기 — 확정본을 작업본(draft)으로 복제, 첫 원아 선택 */
   function openClassifyModal() {
-    if (!selectedChildId && children.length > 0) {
-      setSelectedChildId(children[0].id);
+    setDraftAssignments({ ...photoAssignments });
+    setDraftTags({ ...photoActivityTags });
+    if (children.length > 0) {
+      setSelectedChildId((prev) => prev || children[0].id);
     }
     setShowClusterModal(true);
   }
 
-  // 분류 팝업용 파생값
+  /** 분류 완료 — 작업본을 확정본에 커밋하고 팝업 닫기 */
+  function commitClassification() {
+    setPhotoAssignments({ ...draftAssignments });
+    setPhotoActivityTags({ ...draftTags });
+    markDirty();
+    setShowClusterModal(false);
+  }
+
+  /** 작업 초기화 — 현재 작업본을 디폴트(빈 배정)로 되돌림 */
+  function resetClassification() {
+    setDraftAssignments({});
+    setDraftTags({});
+  }
+
+  /** 그냥 닫기(X·바깥·ESC) — 작업본 폐기, 확정본 유지 */
+  function discardClassification() {
+    setShowClusterModal(false);
+  }
+
+  // 분류 팝업용 파생값 (draft 기반)
   const selectedChild =
     children.find((c) => c.id === selectedChildId) ?? children[0] ?? null;
   const selectedIdx = selectedChild
     ? children.findIndex((c) => c.id === selectedChild.id)
     : -1;
   const ACTIVITY_DATALIST_ID = "activity-tag-suggestions";
+  /** (draft) 특정 원아에게 배정된 사진 */
+  const draftPhotosForChild = (childId: string) =>
+    images.filter((p) => draftAssignments[p.id] === childId);
+  const draftAssignedCount = Object.keys(draftAssignments).length;
+  const draftMatchedCount = new Set(Object.values(draftAssignments)).size;
 
   return (
     <div className="space-y-6">
       {/* 헤더 */}
       <section>
         <div className="flex items-center gap-2">
-          <Link
-            href={backHref}
+          <button
+            type="button"
+            onClick={() => attemptLeave(backHref)}
             className="grid h-8 w-8 place-items-center rounded-full hover:bg-slate-100"
             aria-label="뒤로"
           >
             <ChevronLeft className="h-5 w-5 text-slate-500" />
-          </Link>
+          </button>
           <h1 className="text-xl font-bold tracking-tight text-slate-900">
             매일 활동 기록 · {step}단계 — {STEP_META[step].label}
           </h1>
@@ -925,6 +969,8 @@ export function ActivityRecordForm({
             </div>
           )}
 
+          {/* AI 활동 분석 — 사진 업로드 전에는 표시하지 않음 */}
+          {images.length > 0 && (
           <div className="mt-5">
             <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
               <div className="mb-3 flex items-center justify-between">
@@ -1032,11 +1078,13 @@ export function ActivityRecordForm({
 
                   <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
                     <Users className="h-3 w-3 text-slate-400" />
-                    추정 참여 원아 약{" "}
+                    추정 참여 원아 수{" "}
                     <strong className="text-slate-900">
-                      {analysis.estimated_children}
+                      {Math.min(analysis.estimated_children, attendanceCount)}
                     </strong>
-                    명
+                    <span className="text-slate-400"> / </span>
+                    <span>오늘 출석 {attendanceCount}</span>
+                    <span className="text-slate-400">(명)</span>
                   </div>
 
                   <div className="rounded-lg bg-white p-2 ring-1 ring-emerald-100">
@@ -1051,6 +1099,7 @@ export function ActivityRecordForm({
               )}
             </div>
           </div>
+          )}
         </section>
       )}
 
@@ -1058,7 +1107,7 @@ export function ActivityRecordForm({
       {showClusterModal && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-2 sm:items-center sm:p-6"
-          onClick={() => setShowClusterModal(false)}
+          onClick={discardClassification}
         >
           {/* 활동 태그 추천 (AI 키워드) */}
           <datalist id={ACTIVITY_DATALIST_ID}>
@@ -1079,16 +1128,16 @@ export function ActivityRecordForm({
                   사진 분류
                 </p>
                 <p className="mt-0.5 text-[11px] text-slate-500">
-                  원아를 고르고, 오른쪽 사진을 눌러 그 원아에게 배정하세요. 사진별 활동 태그도 달 수 있어요.
+                  원아를 고르고, 오른쪽 사진을 눌러 그 원아에게 배정하세요. 사진별 활동 태그도 달 수 있어요. 변경은 “분류 완료”를 눌러야 반영됩니다.
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-                  배정 {assignedPhotoCount}/{images.length}장 · 원아 {matchedCount}명
+                  배정 {draftAssignedCount}/{images.length}장 · 원아 {draftMatchedCount}명
                 </span>
                 <button
                   type="button"
-                  onClick={() => setShowClusterModal(false)}
+                  onClick={discardClassification}
                   className="grid h-8 w-8 place-items-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                   aria-label="닫기"
                 >
@@ -1106,7 +1155,7 @@ export function ActivityRecordForm({
                 </p>
                 <ul className="space-y-0.5">
                   {children.map((c) => {
-                    const count = photosForChild(c.id).length;
+                    const count = draftPhotosForChild(c.id).length;
                     const active = selectedChild?.id === c.id;
                     return (
                       <li key={c.id}>
@@ -1192,7 +1241,7 @@ export function ActivityRecordForm({
                     <p className="rounded-xl bg-slate-50 py-10 text-center text-sm text-slate-400">
                       등록된 원아가 없어요.
                     </p>
-                  ) : photosForChild(selectedChild.id).length === 0 ? (
+                  ) : draftPhotosForChild(selectedChild.id).length === 0 ? (
                     <p className="rounded-xl bg-slate-50 py-10 text-center text-xs text-slate-400">
                       오른쪽 “전체 사진”에서 사진을 눌러
                       <br />
@@ -1203,7 +1252,7 @@ export function ActivityRecordForm({
                     </p>
                   ) : (
                     <ul className="grid grid-cols-2 gap-3">
-                      {photosForChild(selectedChild.id).map((p) => (
+                      {draftPhotosForChild(selectedChild.id).map((p) => (
                         <li
                           key={p.id}
                           className="overflow-hidden rounded-xl ring-1 ring-slate-200"
@@ -1231,7 +1280,7 @@ export function ActivityRecordForm({
                             <Tag className="h-3 w-3 shrink-0 text-slate-400" />
                             <input
                               list={ACTIVITY_DATALIST_ID}
-                              value={photoActivityTags[p.id] ?? ""}
+                              value={draftTags[p.id] ?? ""}
                               onChange={(e) =>
                                 setActivityTag(p.id, e.target.value)
                               }
@@ -1251,123 +1300,46 @@ export function ActivityRecordForm({
                 <p className="px-1 py-1 text-[11px] font-semibold text-slate-500">
                   전체 사진 {images.length}장
                 </p>
-                {isPending && clusters.length === 0 && (
-                  <p className="px-1 pb-1 text-[10px] text-emerald-700">
-                    AI 그룹핑 중…
-                  </p>
-                )}
-                <div className="space-y-2">
-                  {clusters.map((cluster, idx) => (
-                    <div key={cluster.description}>
-                      <div className="mb-1 flex items-center justify-between gap-1 px-0.5">
-                        <p className="truncate text-[10px] font-medium text-slate-500">
-                          {idx + 1}. {cluster.description}
-                        </p>
-                        {selectedChild && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              assignClusterToChild(
-                                cluster.photoIds,
-                                selectedChild.id,
-                              )
-                            }
-                            className="shrink-0 rounded bg-emerald-50 px-1 text-[9px] font-semibold text-emerald-700 hover:bg-emerald-100"
-                            title={`이 그룹 전체를 ${selectedChild.name}에게 배정`}
-                          >
-                            전체 배정
-                          </button>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-3 gap-1">
-                        {cluster.photoIds.map((pid) => {
-                          const p = imageById.get(pid);
-                          if (!p) return null;
-                          return (
-                            <RightPaneThumb
-                              key={pid}
-                              photo={p}
-                              assignedChildId={photoAssignments[pid]}
-                              selectedChildId={selectedChild?.id ?? ""}
-                              childName={
-                                photoAssignments[pid]
-                                  ? children.find(
-                                      (c) => c.id === photoAssignments[pid],
-                                    )?.name ?? null
-                                  : null
-                              }
-                              onClick={() =>
-                                selectedChild &&
-                                togglePhotoForChild(pid, selectedChild.id)
-                              }
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {images.map((p) => (
+                    <RightPaneThumb
+                      key={p.id}
+                      photo={p}
+                      assignedChildId={draftAssignments[p.id]}
+                      selectedChildId={selectedChild?.id ?? ""}
+                      childName={
+                        draftAssignments[p.id]
+                          ? children.find((c) => c.id === draftAssignments[p.id])
+                              ?.name ?? null
+                          : null
+                      }
+                      onClick={() =>
+                        selectedChild &&
+                        togglePhotoForChild(p.id, selectedChild.id)
+                      }
+                    />
                   ))}
-
-                  {unclustered.length > 0 && (
-                    <div>
-                      <p className="mb-1 px-0.5 text-[10px] font-medium text-slate-400">
-                        미분류 {unclustered.length}장
-                      </p>
-                      <div className="grid grid-cols-3 gap-1">
-                        {unclustered.map((p) => (
-                          <RightPaneThumb
-                            key={p.id}
-                            photo={p}
-                            assignedChildId={photoAssignments[p.id]}
-                            selectedChildId={selectedChild?.id ?? ""}
-                            childName={
-                              photoAssignments[p.id]
-                                ? children.find(
-                                    (c) => c.id === photoAssignments[p.id],
-                                  )?.name ?? null
-                                : null
-                            }
-                            onClick={() =>
-                              selectedChild &&
-                              togglePhotoForChild(p.id, selectedChild.id)
-                            }
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
 
-            {/* 하단 네비게이션 */}
+            {/* 하단 네비게이션 — 작업 초기화(좌) / 분류 완료(우) */}
             <div className="flex items-center justify-between gap-2 border-t border-slate-100 p-3">
               <button
                 type="button"
-                onClick={() => setShowClusterModal(false)}
-                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                onClick={resetClassification}
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-rose-600 ring-1 ring-rose-200 hover:bg-rose-50"
+                title="현재 작업한 분류를 모두 비웁니다"
               >
-                닫기
+                작업 초기화
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowClusterModal(false);
-                  tryGoStep(2);
-                }}
-                disabled={saving}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                onClick={commitClassification}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
               >
-                {saving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    저장 중…
-                  </>
-                ) : (
-                  <>
-                    다음 단계: 원아 활동 기록
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
+                <Check className="h-4 w-4" strokeWidth={3} />
+                분류 완료
               </button>
             </div>
           </div>
@@ -1643,24 +1615,42 @@ export function ActivityRecordForm({
           <span />
         )}
         {step < 2 ? (
-          <button
-            type="button"
-            onClick={() => tryGoStep((step + 1) as StepNumber)}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60"
-          >
-            {saving ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                저장 중…
-              </>
-            ) : (
-              <>
-                다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
-                <ArrowRight className="h-4 w-4" />
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            {/* 저장하기 — 분석 완료 시 활성, 변경(dirty) 있을 때만 */}
+            <button
+              type="button"
+              onClick={() => void saveToDb()}
+              disabled={!analysis || saving || (savedOnce && !dirty)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  저장 중…
+                </>
+              ) : (
+                <>
+                  <Check className="h-4 w-4" strokeWidth={3} />
+                  저장하기
+                </>
+              )}
+            </button>
+            {/* 다음 단계 — 저장 완료(변경 없음) 후에만 활성 */}
+            <button
+              type="button"
+              onClick={() => tryGoStep((step + 1) as StepNumber)}
+              disabled={!savedOnce || dirty || saving}
+              title={
+                !savedOnce || dirty
+                  ? "먼저 ‘저장하기’를 눌러 저장해주세요"
+                  : undefined
+              }
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          </div>
         ) : (
           <span className="text-xs text-slate-400">마지막 단계</span>
         )}
@@ -1680,6 +1670,42 @@ export function ActivityRecordForm({
         </p>
       </section>
 
+      {/* 페이지 이탈 경고 — 아니오(머무르기, 좌) / 네(나가기, 우·위험) */}
+      {showLeaveDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          onClick={() => setShowLeaveDialog(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-bold text-slate-900">페이지를 나갈까요?</p>
+            <p className="mt-1.5 text-xs text-slate-600">
+              현재 진행 사항이 초기화될 수 있습니다. 나가겠습니까?
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setShowLeaveDialog(false)}
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              >
+                아니오
+              </button>
+              <button
+                type="button"
+                onClick={confirmLeave}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+              >
+                네
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 토스트 — 하단 중앙 (Adobe/Figma 기본, 푸터 버튼 비가림) */}
       {saveToast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-slate-900/90 px-4 py-2 text-xs font-medium text-white shadow-lg">
           {saveToast}

@@ -29,6 +29,23 @@ function parseStep(raw: string | undefined): StepNumber {
   return n === 2 ? 2 : 1;
 }
 
+function isoToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 오늘 해당 반의 출석(present) 원아 수 — 미출석·퇴소 제외 */
+async function loadTodayAttendanceCount(classroomId: string): Promise<number> {
+  const supabase = createAdminClient();
+  const { count } = await supabase
+    .from("attendance")
+    .select("id", { count: "exact", head: true })
+    .eq("classroom_id", classroomId)
+    .eq("date", isoToday())
+    .eq("status", "present");
+  return count ?? 0;
+}
+
 export default async function NewActivityPage({
   searchParams,
 }: {
@@ -39,6 +56,9 @@ export default async function NewActivityPage({
   const classrooms = await loadMyClassrooms(teacherId);
   const active = resolveActiveClassroom(classrooms, searchParams?.classroom);
   const children = active ? await loadChildren(active.id) : [];
+  const attendanceCount = active
+    ? await loadTodayAttendanceCount(active.id)
+    : 0;
 
   const params = new URLSearchParams();
   params.set("role", searchParams?.role ?? "teacher");
@@ -56,6 +76,7 @@ export default async function NewActivityPage({
         classroomName={active?.name ?? "담당 반 없음"}
         classroomId={active?.id ?? ""}
         teacherId={teacherId}
+        attendanceCount={attendanceCount}
         backHref={`/dashboard${qs}`}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         initialStep={initialStep}

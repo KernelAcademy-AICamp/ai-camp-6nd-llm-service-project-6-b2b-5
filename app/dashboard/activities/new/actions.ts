@@ -477,10 +477,8 @@ export async function saveActivityRecordAction(args: {
     if (!args.classroomId) {
       return { ok: false, error: "반 정보를 찾을 수 없어요." };
     }
+    // 원아별 분류는 선택사항 — 사진이 없어도 세션(활동 제목)은 저장
     const groups = args.children.filter((g) => g.photos.length > 0);
-    if (groups.length === 0) {
-      return { ok: false, error: "분류된 원아 사진이 없어요." };
-    }
 
     const supabase = createAdminClient();
 
