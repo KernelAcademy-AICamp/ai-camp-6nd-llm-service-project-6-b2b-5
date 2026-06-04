@@ -1,5 +1,5 @@
 -- =============================================================
--- 015_temperament_parenting.sql
+-- 유치원 관리 시스템 — 015_temperament_parenting.sql
 -- v5.2 개선안 반영 — 기질(temperament) + 부모 양육방식(parenting_style) DB 이전
 --
 -- 배경: 그동안 기질/부모성향은 TS 시드(lib/children-profiles.ts)에만 있었음.
