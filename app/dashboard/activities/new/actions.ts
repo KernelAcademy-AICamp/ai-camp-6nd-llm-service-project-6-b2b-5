@@ -1,11 +1,32 @@
 "use server";
 
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { getAnthropic, MODEL } from "@/lib/anthropic";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+// Haiku는 코드블록이나 산문 prefix를 붙여 응답할 때가 있어 JSON만 추려낸다.
+function extractJson(text: string): string {
+  const t = text.trim();
+  // 1) ```json ... ``` 코드블록
+  const fence = t.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  if (fence) return fence[1].trim();
+  // 2) 첫 { 부터 마지막 } 까지 (객체)
+  const objStart = t.indexOf("{");
+  const objEnd = t.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    return t.slice(objStart, objEnd + 1).trim();
+  }
+  // 3) 첫 [ 부터 마지막 ] 까지 (배열)
+  const arrStart = t.indexOf("[");
+  const arrEnd = t.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd > arrStart) {
+    return t.slice(arrStart, arrEnd + 1).trim();
+  }
+  return t;
+}
+
+const stripJsonFence = extractJson;
 
 const PHOTO_BUCKET = "child-photos";
 /** 원아 1명당 하루(세션) 활동 사진 상한 (저장 스펙) */
@@ -35,8 +56,9 @@ const ANALYSIS_SYSTEM_PROMPT = `당신은 한국 유치원 교사의 \"활동 �
 - estimated_children: 사진에 보이는 추정 참여 아동 수 (정수)
 - suggestion: 이 활동을 기록·문서로 활용할 때의 한 줄 추천 (예: "협동 모습이 잘 드러나 관찰기록에 활용하기 좋아요.")
 
-[출력]
-지정된 JSON 스키마로만 응답.`;
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"activity_title":"...","activity_description":"...","keywords":["..."],"estimated_children":0,"suggestion":"..."}`;
 
 const ANALYSIS_SCHEMA = {
   type: "object" as const,
@@ -86,9 +108,6 @@ export async function analyzePhotosAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1500,
-      output_config: {
-        format: { type: "json_schema", schema: ANALYSIS_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -122,7 +141,7 @@ export async function analyzePhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as PhotoAnalysis;
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as PhotoAnalysis;
     return { ok: true, analysis: parsed };
   } catch (e) {
     return {
@@ -143,8 +162,9 @@ const CLUSTER_SYSTEM_PROMPT = `당신은 한국 유치원 활동 사진을 \"같
 - 그룹 수는 보통 2~6개. 한 사진은 한 그룹에만 속함
 - 한 그룹에 정확히 한 아이만 포함되도록 (여러 명이 함께 찍힌 단체사진은 가능하면 제외)
 
-[출력]
-지정된 JSON 스키마로만 응답.`;
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"clusters":[{"description":"...","photo_indices":[0,1]}]}`;
 
 const CLUSTER_SCHEMA = {
   type: "object" as const,
@@ -192,9 +212,6 @@ export async function clusterPhotosAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1500,
-      output_config: {
-        format: { type: "json_schema", schema: CLUSTER_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -232,7 +249,7 @@ export async function clusterPhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as { clusters: PhotoCluster[] };
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as { clusters: PhotoCluster[] };
     return { ok: true, clusters: parsed.clusters };
   } catch (e) {
     return {
@@ -348,7 +365,11 @@ const SUMMARIES_SYSTEM_PROMPT = `당신은 한국 유치원 담임교사가 \"�
 - 매칭된 사진이 있는 원아: 사진에서 추정할 수 있는 활동 모습 위주
 - 매칭된 사진이 없는 원아: 활동 정보만으로 일반적이지만 따뜻한 한 줄
 - 추측·과장·이름 호칭 외 신상 추측 금지
-- 출력 순서는 입력 원아 순서와 동일하게 1:1 매칭`;
+- 출력 순서는 입력 원아 순서와 동일하게 1:1 매칭
+
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"summaries":["문장1","문장2","문장3"]}`;
 
 const SUMMARIES_SCHEMA = {
   type: "object" as const,
@@ -404,9 +425,6 @@ export async function generateChildSummariesAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4000,
-      output_config: {
-        format: { type: "json_schema", schema: SUMMARIES_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -422,7 +440,7 @@ export async function generateChildSummariesAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as { summaries: string[] };
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as { summaries: string[] };
     if (!Array.isArray(parsed.summaries)) {
       return { ok: false, error: "응답 형식 오류" };
     }
@@ -435,101 +453,43 @@ export async function generateChildSummariesAction(args: {
   }
 }
 
-type ResolvedPhoto = {
-  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
-  data: string;
-};
-
-const EXT_TO_MEDIA: Record<string, ResolvedPhoto["mediaType"]> = {
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-  gif: "image/gif",
-};
-
-async function resolvePhoto(url: string): Promise<ResolvedPhoto | null> {
-  try {
-    if (url.startsWith("data:")) {
-      const parsed = parseDataUrl(url);
-      if (!parsed) return null;
-      return {
-        mediaType: parsed.mediaType as ResolvedPhoto["mediaType"],
-        data: parsed.data,
-      };
-    }
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const contentType =
-        res.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
-      const buf = Buffer.from(await res.arrayBuffer());
-      return {
-        mediaType: contentType as ResolvedPhoto["mediaType"],
-        data: buf.toString("base64"),
-      };
-    }
-    if (url.startsWith("/")) {
-      const localPath = path.join(process.cwd(), "public", url);
-      const buf = await fs.readFile(localPath);
-      const ext = url.split(".").pop()?.toLowerCase() ?? "jpg";
-      const mediaType = EXT_TO_MEDIA[ext] ?? "image/jpeg";
-      return { mediaType, data: buf.toString("base64") };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-const CHILD_DRAFT_SYSTEM_PROMPT = `당신은 한국 유치원 담임교사가 "한 원아의 오늘 활동 기록"을 작성하도록 돕는 AI 보조 도구입니다.
-
-[입력 자료]
-- 매일 활동 기록 본문 (오늘 반에서 있었던 활동의 객관적 묘사)
-- 교사 메모 (오늘 이 원아에 대해 관찰한 짧은 메모)
-- 활동 사진 (선택한 원아의 모습)
+// ── 원아별 활동 기록 초안 생성 (URL 사진 + 교사 메모 + 세션 정보 기반) ──
+const CHILD_DRAFT_SYSTEM_PROMPT = `당신은 한국 어린이집·유치원 담임교사가 한 원아의 오늘 활동 기록을 정리하도록 돕는 AI 보조 도구입니다.
 
 [작성 원칙]
-- 5~7 문장, 총 200~350자
-- 매일 활동 본문은 "활동의 맥락"으로만 활용. 활동 전체를 다시 설명하지 말고, 원아의 행동·반응 중심으로 작성
-- 교사 메모가 있으면 가장 중요한 근거로 사용
-- 사진이 있으면 사진에서 확인되는 모습을 1~2회 반영
-- 사진이 없으면 활동 본문·교사 메모만으로 자연스럽게 작성 (\"사진이 없어\" 같은 메타 언급 금지)
-- 원아 이름으로 시작하는 문장 1~2회 포함
-- 마지막 1문장은 발달·관심사 측면의 짧은 메모 또는 다음 관찰 포인트
-- 추측·과장·신상 추측 금지. 자료에 없는 사실 만들지 말 것
-- 마크다운·이모지·리스트·제목 사용 금지. 본문만 출력`;
+- 4~6 문장, 200~350자.
+- 사진·교사 메모·세션 활동 정보를 자연스럽게 엮어서 그 원아의 모습 중심으로 묘사.
+- 객관적 사실 위주 (관찰된 행동·표정·상호작용). 추측·과장 금지.
+- "○○이는…" 처럼 원아 이름으로 시작하는 문장을 1~2번 포함.
+- 마지막 1~2 문장은 발달·관심사 측면의 짧은 코멘트나 다음 관찰 포인트 제안.
+- 마크다운/이모지/리스트/제목 사용 금지. 평이한 평서문.
+- 본문만 출력.`;
 
 export async function generateChildActivityDraftAction(args: {
   childName: string;
   teacherMemo: string;
-  sessionTitle: string;
-  sessionAiContent: string;
+  sessionTitle: string | null;
+  sessionAiContent: string | null;
   sessionKeywords: string[];
   photoUrls: string[];
 }): Promise<{ ok: true; draft: string } | { ok: false; error: string }> {
   try {
-    const photoTargets = args.photoUrls.slice(0, 2);
-    const resolved = await Promise.all(photoTargets.map(resolvePhoto));
-    const photos = resolved.filter((p): p is ResolvedPhoto => p !== null);
-
+    const photos = (args.photoUrls ?? []).slice(0, 4);
     const promptText = [
       `[원아] ${args.childName}`,
-      `[오늘의 활동 제목] ${args.sessionTitle}`,
-      `[매일 활동 기록 본문]`,
-      args.sessionAiContent,
+      args.sessionTitle ? `[활동 제목] ${args.sessionTitle}` : "",
+      args.sessionAiContent ? `[활동 요약]\n${args.sessionAiContent}` : "",
       args.sessionKeywords.length
         ? `[활동 키워드] ${args.sessionKeywords.join(", ")}`
         : "",
+      args.teacherMemo.trim()
+        ? `[교사 메모]\n${args.teacherMemo.trim()}`
+        : `[교사 메모] (없음 — 활동 정보만으로 작성하세요)`,
+      photos.length
+        ? `[첨부] ${photos.length}장의 활동 사진이 포함되어 있습니다. 사진에서 확인되는 ${args.childName}의 모습을 활용해 주세요.`
+        : "",
       "",
-      `[오늘의 교사 메모]`,
-      args.teacherMemo.trim() || "(교사 메모 없음 — 활동 본문·사진으로만 작성)",
-      "",
-      photos.length > 0
-        ? `[첨부] ${photos.length}장의 활동 사진이 있습니다. 사진 속 ${args.childName} 어린이의 모습을 활용하세요.`
-        : `[첨부] 활동 사진은 없습니다. 위 텍스트 정보만으로 작성하세요.`,
-      "",
-      `위 자료를 바탕으로 ${args.childName} 어린이의 오늘 활동 기록 초안을 작성하세요.`,
+      `위 정보를 바탕으로 ${args.childName}의 오늘 활동 초안을 작성하세요.`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -549,27 +509,21 @@ export async function generateChildActivityDraftAction(args: {
         {
           role: "user",
           content: [
-            ...photos.map((img) => ({
+            ...photos.map((url) => ({
               type: "image" as const,
-              source: {
-                type: "base64" as const,
-                media_type: img.mediaType,
-                data: img.data,
-              },
+              source: { type: "url" as const, url },
             })),
             { type: "text" as const, text: promptText },
           ],
         },
       ],
     });
-
     const final = await stream.finalMessage();
     const draft = final.content
       .filter((b) => b.type === "text")
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("")
       .trim();
-
     if (!draft) return { ok: false, error: "초안이 생성되지 않았어요." };
     return { ok: true, draft };
   } catch (e) {
@@ -834,27 +788,10 @@ const AUTO_CLASSIFY_SYSTEM_PROMPT = `당신은 강아지 사진의 견종(외형
 - 같은 견종이면 그 프로필 인덱스, 어느 프로필 견종과도 다르면 -1
 - 한 사진은 한 프로필에만 매칭 (가장 가까운 하나)
 - 같은 견종 사진이 여러 장이면 모두 같은 프로필로 매칭
-지정된 JSON 스키마로만 응답.`;
 
-const AUTO_CLASSIFY_SCHEMA = {
-  type: "object" as const,
-  properties: {
-    matches: {
-      type: "array" as const,
-      items: {
-        type: "object" as const,
-        properties: {
-          upload: { type: "integer" as const },
-          profile: { type: "integer" as const },
-        },
-        required: ["upload", "profile"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["matches"],
-  additionalProperties: false,
-};
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"matches":[{"upload":0,"profile":2},{"upload":1,"profile":-1}]}`;
 
 type ImgBlock = {
   type: "image";
@@ -921,9 +858,6 @@ export async function autoClassifyByProfileAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 800,
-      output_config: {
-        format: { type: "json_schema", schema: AUTO_CLASSIFY_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -938,7 +872,7 @@ export async function autoClassifyByProfileAction(args: {
       .filter((b) => b.type === "text")
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
-    const parsed = JSON.parse(jsonText) as {
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as {
       matches: Array<{ upload: number; profile: number }>;
     };
 
@@ -950,10 +884,54 @@ export async function autoClassifyByProfileAction(args: {
     }
     return { ok: true, assignments };
   } catch (e) {
-    console.error("[활동기록] 자동 분류 실패", e);
-    return { ok: false, error: e instanceof Error ? e.message : "자동 분류 실패" };
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "자동 분류 실패",
+    };
   }
 }
+
+// ── 저장된 원아별 사진 다시 불러오기 ──
+export async function loadSavedChildPhotosAction(args: {
+  classroomId: string;
+  date: string;
+}): Promise<
+  | { ok: true; byChild: Record<string, Array<{ url: string; order_num: number }>> }
+  | { ok: false; error: string }
+> {
+  try {
+    const supabase = createAdminClient();
+    const { data: session } = await supabase
+      .from("activity_sessions")
+      .select("id")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+    if (!session) return { ok: true, byChild: {} };
+
+    const { data: rows, error } = await supabase
+      .from("child_activity_photos")
+      .select("child_id, order_num, files(url)")
+      .eq("session_id", session.id)
+      .order("order_num");
+    if (error) return { ok: false, error: error.message };
+
+    const byChild: Record<string, Array<{ url: string; order_num: number }>> = {};
+    for (const r of (rows ?? []) as Array<{
+      child_id: string;
+      order_num: number;
+      files: { url: string } | { url: string }[] | null;
+    }>) {
+      const file = Array.isArray(r.files) ? r.files[0] : r.files;
+      if (!file?.url) continue;
+      (byChild[r.child_id] ??= []).push({ url: file.url, order_num: r.order_num });
+    }
+    return { ok: true, byChild };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "사진 로드 실패" };
+  }
+}
+
 
 // =============================================================
 // [2단계 원아별 메모 저장 — 자리(저장 구조만)]
