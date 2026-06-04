@@ -21,6 +21,7 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
+import { NoteActions } from "./_note-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -318,17 +319,22 @@ export default async function NotesPage({
       ) : view === "card" ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {notes.map((n) => (
-            <NoteCardItem key={n.id} note={n} qsBase={qsBase} />
+            <NoteCardItem
+              key={n.id}
+              note={n}
+              qsBase={qsBase}
+              childOptions={classroomChildren}
+            />
           ))}
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
           <ul className="divide-y divide-slate-100">
             {notes.map((n) => (
-              <li key={n.id}>
+              <li key={n.id} className="relative">
                 <Link
                   href={`/dashboard/notes/${n.id}?${qsBase}`}
-                  className="flex items-start gap-3 p-4 hover:bg-slate-50"
+                  className="flex items-start gap-3 p-4 pr-14 hover:bg-slate-50"
                 >
                   <div className="w-24 shrink-0 text-xs">
                     <p className="font-medium text-slate-900">{formatKoDate(n.date)}</p>
@@ -344,6 +350,14 @@ export default async function NotesPage({
                     </span>
                   )}
                 </Link>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <NoteActions
+                    id={n.id}
+                    date={n.date}
+                    childId={n.child_id}
+                    childOptions={classroomChildren}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -353,13 +367,30 @@ export default async function NotesPage({
   );
 }
 
-function NoteCardItem({ note, qsBase }: { note: NoteCard; qsBase: string }) {
+function NoteCardItem({
+  note,
+  qsBase,
+  childOptions,
+}: {
+  note: NoteCard;
+  qsBase: string;
+  childOptions: ChildOpt[];
+}) {
   const mood = note.mood ? MOOD_META[note.mood] : null;
   return (
-    <Link
-      href={`/dashboard/notes/${note.id}?${qsBase}`}
-      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:shadow-md"
-    >
+    <div className="relative h-full">
+      <div className="absolute right-2 top-2 z-10">
+        <NoteActions
+          id={note.id}
+          date={note.date}
+          childId={note.child_id}
+          childOptions={childOptions}
+        />
+      </div>
+      <Link
+        href={`/dashboard/notes/${note.id}?${qsBase}`}
+        className="group flex h-full flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:shadow-md"
+      >
       {note.photoUrl ? (
         <div className="relative aspect-[4/3] w-full overflow-hidden bg-slate-100">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -377,7 +408,7 @@ function NoteCardItem({ note, qsBase }: { note: NoteCard; qsBase: string }) {
         </div>
       ) : null}
       <div className="flex flex-1 flex-col p-4">
-        <div className="flex items-center justify-between gap-2">
+        <div className={`flex items-center justify-between gap-2 ${note.photoUrl ? "" : "pr-8"}`}>
           <p className="text-xs font-bold text-slate-900">{formatKoDate(note.date)}</p>
           {mood && <mood.Icon className={`h-4 w-4 ${mood.tone}`} aria-label={mood.label} />}
         </div>
@@ -409,6 +440,7 @@ function NoteCardItem({ note, qsBase }: { note: NoteCard; qsBase: string }) {
           )}
         </div>
       </div>
-    </Link>
+      </Link>
+    </div>
   );
 }
