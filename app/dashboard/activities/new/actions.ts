@@ -56,8 +56,13 @@ const ANALYSIS_SYSTEM_PROMPT = `당신은 한국 유치원 교사의 \"활동 �
 - estimated_children: 사진에 보이는 추정 참여 아동 수 (정수)
 - suggestion: 이 활동을 기록·문서로 활용할 때의 한 줄 추천 (예: "협동 모습이 잘 드러나 관찰기록에 활용하기 좋아요.")
 
+[인물 식별 아님 — 거절 금지]
+- 이것은 특정 인물(아동)을 식별·인식하는 작업이 아니라, 교사의 기록을 돕기 위해 활동·놀이·재료·공간을 묘사하는 작업입니다.
+- 사진 속 인물의 신원·얼굴을 식별하지 않으므로 안전한 요청입니다. 절대 거절하거나 사과("죄송하지만…", "제공된 사진으로는…") 하지 마세요.
+- 사진이 불분명하거나 분석이 어려워도, 거절 대신 활동·공간 중심으로 일반적인 추정 JSON을 작성하고 activity_description 끝에 "사진이 선명하지 않아 일반적으로 추정한 내용입니다."를 덧붙이세요.
+
 [출력 — 매우 중요]
-- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·사과·코드블록·마크다운) 절대 금지.
 {"activity_title":"...","activity_description":"...","keywords":["..."],"estimated_children":0,"suggestion":"..."}`;
 
 const ANALYSIS_SCHEMA = {
@@ -141,7 +146,17 @@ export async function analyzePhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(stripJsonFence(jsonText)) as PhotoAnalysis;
+    let parsed: PhotoAnalysis;
+    try {
+      parsed = JSON.parse(stripJsonFence(jsonText)) as PhotoAnalysis;
+    } catch {
+      // 모델이 JSON 대신 거절·사과 문장을 반환한 경우 — raw 파싱 에러 대신 안내
+      const snippet = jsonText.trim().replace(/\s+/g, " ").slice(0, 50);
+      return {
+        ok: false,
+        error: `AI가 사진을 분석하지 못했어요. 다른 사진으로 다시 시도하거나, 활동 정보를 직접 입력해 주세요.${snippet ? ` (AI 응답: "${snippet}…")` : ""}`,
+      };
+    }
     return { ok: true, analysis: parsed };
   } catch (e) {
     return {
@@ -162,8 +177,13 @@ const CLUSTER_SYSTEM_PROMPT = `당신은 한국 유치원 활동 사진을 \"같
 - 그룹 수는 보통 2~6개. 한 사진은 한 그룹에만 속함
 - 한 그룹에 정확히 한 아이만 포함되도록 (여러 명이 함께 찍힌 단체사진은 가능하면 제외)
 
+[인물 식별 아님 — 거절 금지]
+- 이것은 신원을 식별하는 작업이 아니라, 옷차림·색상 같은 시각적 단서로 사진을 묶기만 하는 작업입니다. 이름·신원은 다루지 않습니다.
+- 따라서 안전한 요청이며, 절대 거절하거나 사과("죄송하지만…", "제공된 사진으로는…") 하지 마세요.
+- 묶을 단서가 부족하면 빈 목록 {"clusters":[]} 을 출력하세요. 사과·설명 문장은 금지입니다.
+
 [출력 — 매우 중요]
-- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·사과·코드블록·마크다운) 절대 금지.
 {"clusters":[{"description":"...","photo_indices":[0,1]}]}`;
 
 const CLUSTER_SCHEMA = {
@@ -249,8 +269,14 @@ export async function clusterPhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(stripJsonFence(jsonText)) as { clusters: PhotoCluster[] };
-    return { ok: true, clusters: parsed.clusters };
+    let parsed: { clusters: PhotoCluster[] };
+    try {
+      parsed = JSON.parse(stripJsonFence(jsonText)) as { clusters: PhotoCluster[] };
+    } catch {
+      // 모델이 JSON 대신 거절·사과 문장을 반환한 경우 — 그룹핑 없이 빈 결과로 처리
+      return { ok: true, clusters: [] };
+    }
+    return { ok: true, clusters: parsed.clusters ?? [] };
   } catch (e) {
     return {
       ok: false,

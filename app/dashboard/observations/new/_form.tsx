@@ -451,7 +451,7 @@ export function ObservationForm({
                         ) : (
                           <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
                             {areaContent[k] || (
-                              <span className="text-slate-300">메모가 없어요</span>
+                              <span className="text-slate-400">해당 누리과정 영역에 대한 내용이 없어 생성되지 않았습니다.</span>
                             )}
                           </p>
                         )}
@@ -839,7 +839,7 @@ function AreaBlock({
         />
       ) : (
         <div className="whitespace-pre-wrap border-t border-emerald-100 bg-white p-3 text-xs leading-relaxed text-slate-800">
-          {value || <span className="text-slate-300">메모가 없어요</span>}
+          {value || <span className="text-slate-400">해당 누리과정 영역에 대한 내용이 없어 생성되지 않았습니다.</span>}
         </div>
       )}
     </div>
