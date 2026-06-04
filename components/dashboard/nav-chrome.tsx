@@ -46,8 +46,8 @@ const MENU: {
   { href: "/dashboard/activities", label: "활동 기록", icon: Camera,
     roles: ["teacher"],
     children: [
-      { href: "/dashboard/activities/new", label: "활동 기록 작성" },
       { href: "/dashboard/activities", label: "활동 기록 목록" },
+      { href: "/dashboard/activities/new", label: "활동 기록 작성" },
     ] },
   { href: "/dashboard/today-memo", label: "한줄기록", icon: PencilLine,
     roles: ["teacher"] },
