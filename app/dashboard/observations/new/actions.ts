@@ -29,6 +29,12 @@ const OBSERVATION_SYSTEM_PROMPT = `당신은 한국 유치원 교사의 관찰�
 - developmental_trend: 기간 흐름에 따른 발달의 흐름·변화를 2~3 문장으로 요약
 - 메모 부족 시 "관찰된 사례가 충분치 않습니다"로 시작하는 짧은 안내
 
+[원아 기질 반영 원칙]
+- [원아 기질] 정보가 제공되면, 관찰된 행동을 그 기질의 맥락에서 해석한다.
+  (예: 예민도가 높은 아이의 위축은 기질적 특성으로 이해하고, 강점·지원 방향을 함께 제시)
+- 단, 기질로 행동을 단정하거나 낙인(산만함·문제행동 등)하지 않는다. 관찰 사실이 우선이며 기질은 해석의 보조로만 쓴다.
+- 기질 정보가 없으면 기질을 언급하지 않는다.
+
 [출력]
 지정된 JSON 스키마로만 응답.`;
 
@@ -90,17 +96,15 @@ export async function generateObservationDraftAction(args: {
         : "전체 5개 영역";
 
     const userPrompt =
-      contextToPromptText(ctx) +
+      contextToPromptText(ctx, { includeTemperament: true }) +
       `\n\n[중점 영역] ${focusAreas}` +
       (args.keywords.length > 0 ? `\n[강조할 키워드] ${args.keywords.join(", ")}` : "");
 
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 2400,
       output_config: {
-        effort: "medium",
         format: { type: "json_schema", schema: OBSERVATION_SCHEMA },
       },
       system: [
@@ -148,9 +152,7 @@ export async function refineObservationAreaAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 600,
-      output_config: { effort: "low" },
       system: [
         { type: "text", text: REFINE_AREA_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       ],

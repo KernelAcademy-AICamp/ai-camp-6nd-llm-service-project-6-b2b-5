@@ -2,7 +2,12 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { revalidatePath } from "next/cache";
 import { getAnthropic, MODEL } from "@/lib/anthropic";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+const PHOTO_BUCKET = "child-photos";
 
 export type PhotoAnalysis = {
   activity_title: string;
@@ -78,10 +83,8 @@ export async function analyzePhotosAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 1500,
       output_config: {
-        effort: "medium",
         format: { type: "json_schema", schema: ANALYSIS_SCHEMA },
       },
       system: [
@@ -186,10 +189,8 @@ export async function clusterPhotosAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 1500,
       output_config: {
-        effort: "medium",
         format: { type: "json_schema", schema: CLUSTER_SCHEMA },
       },
       system: [
@@ -283,9 +284,7 @@ export async function generateChildActivityMemoAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 1200,
-      output_config: { effort: "medium" },
       system: [
         {
           type: "text",
@@ -402,10 +401,8 @@ export async function generateChildSummariesAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 4000,
       output_config: {
-        effort: "medium",
         format: { type: "json_schema", schema: SUMMARIES_SCHEMA },
       },
       system: [
@@ -538,9 +535,7 @@ export async function generateChildActivityDraftAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      thinking: { type: "adaptive" },
       max_tokens: 1200,
-      output_config: { effort: "medium" },
       system: [
         {
           type: "text",
@@ -580,5 +575,408 @@ export async function generateChildActivityDraftAction(args: {
       ok: false,
       error: e instanceof Error ? e.message : "초안 생성 실패",
     };
+  }
+}
+
+// =============================================================
+// 원아별 분류 사진 DB 저장 (Supabase)
+// activity_sessions(반+날짜) → child_activity_photos(원아별 사진) + activity_records(메모)
+// 사진 원본은 Storage 버킷 child-photos 에 업로드, 메타는 files 테이블에 기록.
+// =============================================================
+
+export type SaveChildPhotoInput = {
+  /** data:image/...;base64,... 형식 */
+  dataUrl: string;
+  /** 사진별 활동 태그 (없으면 null) */
+  activity: string | null;
+};
+
+export type SaveChildGroupInput = {
+  childId: string;
+  photos: SaveChildPhotoInput[];
+};
+
+function extFromMediaType(mediaType: string): string {
+  if (mediaType === "image/png") return "png";
+  if (mediaType === "image/webp") return "webp";
+  if (mediaType === "image/gif") return "gif";
+  return "jpg";
+}
+
+/**
+ * 원아별로 분류된 활동 사진을 Supabase 에 저장한다.
+ * - activity_sessions: (classroom_id, date) 1건 upsert (활동 제목 반영)
+ * - child_activity_photos: 세션 내 기존 사진 정리 후 원아별 사진 재등록
+ * - activity_records: 원아별 활동 태그를 메모로 upsert
+ * service_role(admin) 클라이언트로 동작하므로 RLS 를 우회한다(서버 전용).
+ */
+export async function saveActivityRecordAction(args: {
+  classroomId: string;
+  teacherId: string;
+  date: string; // YYYY-MM-DD
+  activityTitle: string | null;
+  children: SaveChildGroupInput[];
+}): Promise<
+  | { ok: true; sessionId: string; savedPhotos: number; savedChildren: number }
+  | { ok: false; error: string }
+> {
+  try {
+    if (!args.classroomId) {
+      return { ok: false, error: "반 정보를 찾을 수 없어요." };
+    }
+    // 원아별 분류는 선택사항 — 사진이 없어도 세션(활동 제목)은 저장
+    const groups = args.children.filter((g) => g.photos.length > 0);
+
+    const supabase = createAdminClient();
+
+    // 1) 교사의 유치원 id (files.kindergarten_id / storage 경로용)
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("kindergarten_id")
+      .eq("id", args.teacherId)
+      .maybeSingle();
+    const kindergartenId =
+      (prof as { kindergarten_id: string | null } | null)?.kindergarten_id ??
+      null;
+
+    // 2) activity_sessions upsert (classroom_id, date)
+    const { data: existingSession } = await supabase
+      .from("activity_sessions")
+      .select("id")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+
+    let sessionId = (existingSession as { id: string } | null)?.id ?? null;
+    if (!sessionId) {
+      const { data: created, error: sErr } = await supabase
+        .from("activity_sessions")
+        .insert({
+          classroom_id: args.classroomId,
+          date: args.date,
+          title: args.activityTitle,
+          created_by: args.teacherId,
+        })
+        .select("id")
+        .single();
+      if (sErr || !created) {
+        return { ok: false, error: sErr?.message ?? "세션 생성 실패" };
+      }
+      sessionId = created.id;
+    } else if (args.activityTitle) {
+      await supabase
+        .from("activity_sessions")
+        .update({ title: args.activityTitle })
+        .eq("id", sessionId);
+    }
+
+    // 3) 재저장 멱등성 — 이 세션의 기존 분류 사진 링크 제거 후 재등록
+    await supabase
+      .from("child_activity_photos")
+      .delete()
+      .eq("session_id", sessionId);
+
+    // 4) 원아별 사진 업로드 + 메모
+    let savedPhotos = 0;
+    let savedChildren = 0;
+    for (const group of groups) {
+      let childPhotoSaved = 0;
+      let order = 0;
+      for (const photo of group.photos) {
+        const parsed = parseDataUrl(photo.dataUrl);
+        if (!parsed) continue;
+        const ext = extFromMediaType(parsed.mediaType);
+        const buffer = Buffer.from(parsed.data, "base64");
+        const storagePath = `${kindergartenId ?? "unknown"}/${group.childId}/${randomUUID()}.${ext}`;
+
+        const { error: upErr } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .upload(storagePath, buffer, {
+            contentType: parsed.mediaType,
+            upsert: false,
+          });
+        if (upErr) {
+          console.error("[활동기록] 사진 Storage 업로드 실패", upErr.message);
+          continue;
+        }
+
+        const { data: pub } = supabase.storage
+          .from(PHOTO_BUCKET)
+          .getPublicUrl(storagePath);
+        const url = pub?.publicUrl ?? storagePath;
+
+        const { data: fileRow, error: fErr } = await supabase
+          .from("files")
+          .insert({
+            kindergarten_id: kindergartenId,
+            uploader_id: args.teacherId,
+            bucket: PHOTO_BUCKET,
+            storage_path: storagePath,
+            url,
+            file_name: `${group.childId}-${order + 1}.${ext}`,
+            file_size: buffer.length,
+            mime_type: parsed.mediaType,
+          })
+          .select("id")
+          .single();
+        if (fErr || !fileRow) {
+          console.error("[활동기록] files 저장 실패", fErr?.message);
+          continue;
+        }
+
+        const { error: capErr } = await supabase
+          .from("child_activity_photos")
+          .insert({
+            session_id: sessionId,
+            child_id: group.childId,
+            file_id: fileRow.id,
+            order_num: order,
+            created_by: args.teacherId,
+          });
+        if (capErr) {
+          console.error("[활동기록] child_activity_photos 저장 실패", capErr.message);
+          continue;
+        }
+        order += 1;
+        childPhotoSaved += 1;
+        savedPhotos += 1;
+      }
+
+      if (childPhotoSaved > 0) savedChildren += 1;
+
+      // activity_records: 활동 태그를 메모로 upsert
+      const tags = Array.from(
+        new Set(
+          group.photos
+            .map((p) => p.activity?.trim())
+            .filter((t): t is string => !!t),
+        ),
+      );
+      const memo = tags.length ? tags.join(", ") : null;
+      const { data: rec } = await supabase
+        .from("activity_records")
+        .select("id")
+        .eq("session_id", sessionId)
+        .eq("child_id", group.childId)
+        .maybeSingle();
+      if ((rec as { id: string } | null)?.id) {
+        if (memo) {
+          await supabase
+            .from("activity_records")
+            .update({ memo, updated_by: args.teacherId })
+            .eq("id", (rec as { id: string }).id);
+        }
+      } else {
+        await supabase.from("activity_records").insert({
+          session_id: sessionId,
+          child_id: group.childId,
+          memo,
+          updated_by: args.teacherId,
+        });
+      }
+    }
+
+    revalidatePath("/dashboard/activities/new");
+    return { ok: true, sessionId: sessionId as string, savedPhotos, savedChildren };
+  } catch (e) {
+    console.error("[활동기록] 저장 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "저장 실패" };
+  }
+}
+
+/**
+ * 특정 세션에서 원아별로 저장된 사진을 다시 불러온다. (저장 검증용)
+ * 반환: childId -> 사진 URL 배열
+ */
+export async function loadSavedChildPhotosAction(args: {
+  classroomId: string;
+  date: string;
+}): Promise<
+  | { ok: true; sessionId: string | null; byChild: Record<string, string[]> }
+  | { ok: false; error: string }
+> {
+  try {
+    const supabase = createAdminClient();
+    const { data: session } = await supabase
+      .from("activity_sessions")
+      .select("id")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+    const sessionId = (session as { id: string } | null)?.id ?? null;
+    if (!sessionId) return { ok: true, sessionId: null, byChild: {} };
+
+    const { data: rows } = await supabase
+      .from("child_activity_photos")
+      .select("child_id, order_num, files ( bucket, storage_path, url )")
+      .eq("session_id", sessionId)
+      .order("order_num", { ascending: true });
+
+    const byChild: Record<string, string[]> = {};
+    for (const r of (rows ?? []) as Array<{
+      child_id: string;
+      files:
+        | { bucket: string; storage_path: string; url: string }
+        | { bucket: string; storage_path: string; url: string }[]
+        | null;
+    }>) {
+      const file = Array.isArray(r.files) ? r.files[0] : r.files;
+      if (!file) continue;
+      // private 버킷 대응 — 1시간 서명 URL 생성, 실패 시 저장된 url 사용
+      let viewUrl = file.url;
+      try {
+        const { data: signed } = await supabase.storage
+          .from(file.bucket)
+          .createSignedUrl(file.storage_path, 3600);
+        if (signed?.signedUrl) viewUrl = signed.signedUrl;
+      } catch {
+        // 무시 — fallback url 사용
+      }
+      (byChild[r.child_id] ??= []).push(viewUrl);
+    }
+    return { ok: true, sessionId, byChild };
+  } catch (e) {
+    console.error("[활동기록] 저장 사진 조회 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "조회 실패" };
+  }
+}
+
+// =============================================================
+// 데모 — 강아지 사진 기반 원아별 자동 분류
+// 업로드 사진 ↔ 원아 프로필 강아지를 외형(견종)으로 매칭한다.
+// 사람 신원 식별이 아니라 데모용 강아지 외형 매칭이므로 프라이버시 이슈 없음.
+// =============================================================
+
+export type ProfileMatchInput = {
+  childId: string;
+  dataUrl: string;
+  label?: string; // 견종 라벨(데모 힌트)
+};
+export type UploadMatchInput = { photoId: string; dataUrl: string };
+
+const AUTO_CLASSIFY_SYSTEM_PROMPT = `당신은 강아지 사진의 견종(외형·색·무늬)을 판별해 프로필과 매칭하는 AI입니다.
+[프로필] 강아지들(각 견종 라벨 제공)과 [사진] 강아지들이 주어집니다.
+각 [사진]의 강아지 견종을 시각적으로 판별한 뒤, 같은 견종의 [프로필] 인덱스로 매칭하세요.
+- 같은 견종이면 그 프로필 인덱스, 어느 프로필 견종과도 다르면 -1
+- 한 사진은 한 프로필에만 매칭 (가장 가까운 하나)
+- 같은 견종 사진이 여러 장이면 모두 같은 프로필로 매칭
+지정된 JSON 스키마로만 응답.`;
+
+const AUTO_CLASSIFY_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    matches: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          upload: { type: "integer" as const },
+          profile: { type: "integer" as const },
+        },
+        required: ["upload", "profile"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["matches"],
+  additionalProperties: false,
+};
+
+type ImgBlock = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+    data: string;
+  };
+};
+
+function toImageBlock(dataUrl: string): ImgBlock | null {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: parsed.mediaType as ImgBlock["source"]["media_type"],
+      data: parsed.data,
+    },
+  };
+}
+
+/**
+ * 업로드 사진을 원아 프로필 강아지와 외형 매칭해 원아별 배정을 반환.
+ * 반환: photoId -> childId
+ */
+export async function autoClassifyByProfileAction(args: {
+  profiles: ProfileMatchInput[];
+  uploads: UploadMatchInput[];
+}): Promise<
+  | { ok: true; assignments: Record<string, string> }
+  | { ok: false; error: string }
+> {
+  try {
+    if (args.profiles.length === 0 || args.uploads.length === 0) {
+      return { ok: true, assignments: {} };
+    }
+
+    const content: Array<ImgBlock | { type: "text"; text: string }> = [];
+    content.push({ type: "text", text: "[프로필 강아지]" });
+    args.profiles.forEach((p, i) => {
+      const block = toImageBlock(p.dataUrl);
+      if (!block) return;
+      content.push({
+        type: "text",
+        text: p.label ? `프로필 ${i} (견종: ${p.label})` : `프로필 ${i}`,
+      });
+      content.push(block);
+    });
+    content.push({ type: "text", text: "[분류할 사진]" });
+    args.uploads.forEach((u, i) => {
+      const block = toImageBlock(u.dataUrl);
+      if (!block) return;
+      content.push({ type: "text", text: `사진 ${i}` });
+      content.push(block);
+    });
+    content.push({
+      type: "text",
+      text: `위 ${args.uploads.length}장의 [사진] 각각을 가장 닮은 [프로필] 인덱스(없으면 -1)로 매칭해 JSON 으로 응답하세요.`,
+    });
+
+    const client = getAnthropic();
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 800,
+      output_config: {
+        format: { type: "json_schema", schema: AUTO_CLASSIFY_SCHEMA },
+      },
+      system: [
+        {
+          type: "text",
+          text: AUTO_CLASSIFY_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content }],
+    });
+
+    const jsonText = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
+    const parsed = JSON.parse(jsonText) as {
+      matches: Array<{ upload: number; profile: number }>;
+    };
+
+    const assignments: Record<string, string> = {};
+    for (const m of parsed.matches ?? []) {
+      const u = args.uploads[m.upload];
+      const p = args.profiles[m.profile];
+      if (u && p && m.profile >= 0) assignments[u.photoId] = p.childId;
+    }
+    return { ok: true, assignments };
+  } catch (e) {
+    console.error("[활동기록] 자동 분류 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "자동 분류 실패" };
   }
 }
