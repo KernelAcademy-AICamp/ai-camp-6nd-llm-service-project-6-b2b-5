@@ -1,5 +1,7 @@
 "use server";
 
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { getAnthropic, MODEL } from "@/lib/anthropic";
 
 export type PhotoAnalysis = {
@@ -76,8 +78,8 @@ export async function analyzePhotosAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 1500,
       thinking: { type: "adaptive" },
+      max_tokens: 1500,
       output_config: {
         effort: "medium",
         format: { type: "json_schema", schema: ANALYSIS_SCHEMA },
@@ -184,8 +186,8 @@ export async function clusterPhotosAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 1500,
       thinking: { type: "adaptive" },
+      max_tokens: 1500,
       output_config: {
         effort: "medium",
         format: { type: "json_schema", schema: CLUSTER_SCHEMA },
@@ -281,8 +283,8 @@ export async function generateChildActivityMemoAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      max_tokens: 1200,
       thinking: { type: "adaptive" },
+      max_tokens: 1200,
       output_config: { effort: "medium" },
       system: [
         {
@@ -400,8 +402,8 @@ export async function generateChildSummariesAction(args: {
     const client = getAnthropic();
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 4000,
       thinking: { type: "adaptive" },
+      max_tokens: 4000,
       output_config: {
         effort: "medium",
         format: { type: "json_schema", schema: SUMMARIES_SCHEMA },
@@ -430,6 +432,153 @@ export async function generateChildSummariesAction(args: {
     return {
       ok: false,
       error: e instanceof Error ? e.message : "일괄 생성 실패",
+    };
+  }
+}
+
+type ResolvedPhoto = {
+  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  data: string;
+};
+
+const EXT_TO_MEDIA: Record<string, ResolvedPhoto["mediaType"]> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+async function resolvePhoto(url: string): Promise<ResolvedPhoto | null> {
+  try {
+    if (url.startsWith("data:")) {
+      const parsed = parseDataUrl(url);
+      if (!parsed) return null;
+      return {
+        mediaType: parsed.mediaType as ResolvedPhoto["mediaType"],
+        data: parsed.data,
+      };
+    }
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const contentType =
+        res.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/jpeg";
+      const buf = Buffer.from(await res.arrayBuffer());
+      return {
+        mediaType: contentType as ResolvedPhoto["mediaType"],
+        data: buf.toString("base64"),
+      };
+    }
+    if (url.startsWith("/")) {
+      const localPath = path.join(process.cwd(), "public", url);
+      const buf = await fs.readFile(localPath);
+      const ext = url.split(".").pop()?.toLowerCase() ?? "jpg";
+      const mediaType = EXT_TO_MEDIA[ext] ?? "image/jpeg";
+      return { mediaType, data: buf.toString("base64") };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const CHILD_DRAFT_SYSTEM_PROMPT = `당신은 한국 유치원 담임교사가 "한 원아의 오늘 활동 기록"을 작성하도록 돕는 AI 보조 도구입니다.
+
+[입력 자료]
+- 매일 활동 기록 본문 (오늘 반에서 있었던 활동의 객관적 묘사)
+- 교사 메모 (오늘 이 원아에 대해 관찰한 짧은 메모)
+- 활동 사진 (선택한 원아의 모습)
+
+[작성 원칙]
+- 5~7 문장, 총 200~350자
+- 매일 활동 본문은 "활동의 맥락"으로만 활용. 활동 전체를 다시 설명하지 말고, 원아의 행동·반응 중심으로 작성
+- 교사 메모가 있으면 가장 중요한 근거로 사용
+- 사진이 있으면 사진에서 확인되는 모습을 1~2회 반영
+- 사진이 없으면 활동 본문·교사 메모만으로 자연스럽게 작성 (\"사진이 없어\" 같은 메타 언급 금지)
+- 원아 이름으로 시작하는 문장 1~2회 포함
+- 마지막 1문장은 발달·관심사 측면의 짧은 메모 또는 다음 관찰 포인트
+- 추측·과장·신상 추측 금지. 자료에 없는 사실 만들지 말 것
+- 마크다운·이모지·리스트·제목 사용 금지. 본문만 출력`;
+
+export async function generateChildActivityDraftAction(args: {
+  childName: string;
+  teacherMemo: string;
+  sessionTitle: string;
+  sessionAiContent: string;
+  sessionKeywords: string[];
+  photoUrls: string[];
+}): Promise<{ ok: true; draft: string } | { ok: false; error: string }> {
+  try {
+    const photoTargets = args.photoUrls.slice(0, 2);
+    const resolved = await Promise.all(photoTargets.map(resolvePhoto));
+    const photos = resolved.filter((p): p is ResolvedPhoto => p !== null);
+
+    const promptText = [
+      `[원아] ${args.childName}`,
+      `[오늘의 활동 제목] ${args.sessionTitle}`,
+      `[매일 활동 기록 본문]`,
+      args.sessionAiContent,
+      args.sessionKeywords.length
+        ? `[활동 키워드] ${args.sessionKeywords.join(", ")}`
+        : "",
+      "",
+      `[오늘의 교사 메모]`,
+      args.teacherMemo.trim() || "(교사 메모 없음 — 활동 본문·사진으로만 작성)",
+      "",
+      photos.length > 0
+        ? `[첨부] ${photos.length}장의 활동 사진이 있습니다. 사진 속 ${args.childName} 어린이의 모습을 활용하세요.`
+        : `[첨부] 활동 사진은 없습니다. 위 텍스트 정보만으로 작성하세요.`,
+      "",
+      `위 자료를 바탕으로 ${args.childName} 어린이의 오늘 활동 기록 초안을 작성하세요.`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const client = getAnthropic();
+    const stream = client.messages.stream({
+      model: MODEL,
+      thinking: { type: "adaptive" },
+      max_tokens: 1200,
+      output_config: { effort: "medium" },
+      system: [
+        {
+          type: "text",
+          text: CHILD_DRAFT_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            ...photos.map((img) => ({
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: img.mediaType,
+                data: img.data,
+              },
+            })),
+            { type: "text" as const, text: promptText },
+          ],
+        },
+      ],
+    });
+
+    const final = await stream.finalMessage();
+    const draft = final.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("")
+      .trim();
+
+    if (!draft) return { ok: false, error: "초안이 생성되지 않았어요." };
+    return { ok: true, draft };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "초안 생성 실패",
     };
   }
 }

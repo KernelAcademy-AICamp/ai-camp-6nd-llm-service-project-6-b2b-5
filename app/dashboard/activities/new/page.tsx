@@ -57,6 +57,7 @@ export default async function NewActivityPage({
         backHref={`/dashboard${qs}`}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         initialStep={initialStep}
+        nextStepHref={`/dashboard/activity-records${qs}`}
       />
     </main>
   );

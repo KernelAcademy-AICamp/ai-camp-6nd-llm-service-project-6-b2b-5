@@ -94,12 +94,14 @@ export function ActivityRecordForm({
   todayMemoHref,
   backHref,
   initialStep,
+  nextStepHref,
 }: {
   childOptions: ChildOption[];
   classroomName: string;
   todayMemoHref: string;
   backHref: string;
   initialStep: StepNumber;
+  nextStepHref: string;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<StepNumber>(initialStep);
@@ -273,10 +275,6 @@ export function ActivityRecordForm({
     (c) => clusterMatches[c.description],
   ).length;
 
-  // step gating
-  const canGoStep2 = !!analysis && images.length > 0;
-  const canGoStep3 = canGoStep2 && matchedCount > 0;
-
   // sessionStorage 자동 저장
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -368,9 +366,6 @@ export function ActivityRecordForm({
     setError(null);
     setStep(target);
   }
-
-  const matchedChildren = children.filter((c) => matchedChildIds.has(c.id));
-  const otherChildren = children.filter((c) => !matchedChildIds.has(c.id));
 
   return (
     <div className="space-y-6">
@@ -1092,14 +1087,13 @@ export function ActivityRecordForm({
           <span />
         )}
         {step < 2 ? (
-          <button
-            type="button"
-            onClick={() => tryGoStep((step + 1) as StepNumber)}
+          <Link
+            href={nextStepHref}
             className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700"
           >
             다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
             <ArrowRight className="h-4 w-4" />
-          </button>
+          </Link>
         ) : (
           <span className="text-xs text-slate-400">마지막 단계</span>
         )}
