@@ -34,6 +34,8 @@ const MENU: {
   icon: typeof LayoutDashboard;
   roles: Role[];
   children?: { href: string; label: string }[];
+  // 부모 메뉴 클릭 시 이동 목표(미지정 시 href). 섹션 활성 판정엔 href 사용.
+  clickHref?: string;
 }[] = [
   { href: "/dashboard", label: "대시보드", icon: LayoutDashboard,
     roles: ["director", "teacher", "admin"] },
@@ -53,6 +55,7 @@ const MENU: {
     roles: ["teacher"] },
   { href: "/dashboard/notes", label: "알림장", icon: MessageSquare,
     roles: ["teacher"],
+    clickHref: "/dashboard/notes/new",
     children: [
       { href: "/dashboard/notes/new", label: "알림장 작성" },
       { href: "/dashboard/notes", label: "알림장 목록" },
@@ -60,6 +63,7 @@ const MENU: {
     ] },
   { href: "/dashboard/observations", label: "관찰일지", icon: BookOpen,
     roles: ["teacher"],
+    clickHref: "/dashboard/observations/new",
     children: [
       { href: "/dashboard/observations/new", label: "관찰일지 작성" },
       { href: "/dashboard/observations", label: "관찰일지 목록" },
@@ -225,7 +229,7 @@ export function NavChrome({
               return (
                 <div key={item.href}>
                   <Link
-                    href={buildMenuHref(item.href)}
+                    href={buildMenuHref(item.clickHref ?? item.href)}
                     className={cn(
                       "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
                       isActive
