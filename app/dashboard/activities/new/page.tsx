@@ -77,7 +77,6 @@ export default async function NewActivityPage({
         classroomId={active?.id ?? ""}
         teacherId={teacherId}
         attendanceCount={attendanceCount}
-        backHref={`/dashboard${qs}`}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         initialStep={initialStep}
       />

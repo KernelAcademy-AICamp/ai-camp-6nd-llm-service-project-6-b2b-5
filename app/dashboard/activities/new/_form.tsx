@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
-  ChevronLeft,
   Upload,
   Check,
   X,
@@ -160,7 +159,6 @@ async function urlToCompressedDataUrl(url: string): Promise<string> {
  * @param classroomId 현재 반 id (DB 저장용)
  * @param teacherId 작성 교사 id (DB 저장용)
  * @param todayMemoHref 한줄기록(오늘 메모) 링크
- * @param backHref 대시보드 복귀 링크
  * @param initialStep 진입 시 시작 단계 (1 | 2)
  */
 export function ActivityRecordForm({
@@ -170,7 +168,6 @@ export function ActivityRecordForm({
   teacherId,
   attendanceCount,
   todayMemoHref,
-  backHref,
   initialStep,
 }: {
   childOptions: ChildOption[];
@@ -179,7 +176,6 @@ export function ActivityRecordForm({
   teacherId: string;
   attendanceCount: number; // 오늘 출석 인원 수 (퇴소·미출석 제외)
   todayMemoHref: string;
-  backHref: string;
   initialStep: StepNumber;
 }) {
   const router = useRouter();
@@ -252,6 +248,8 @@ export function ActivityRecordForm({
     hydratedRef.current = true;
     const handoff = loadHandoff();
     if (!handoff) return;
+    // 다른 반의 작업이면 복원하지 않음 (반 전환 시 이전 작업 노출 방지)
+    if (handoff.classroomName && handoff.classroomName !== classroomName) return;
     const restoredImages: UploadedImage[] = [];
     const restoredAssignments: Record<string, string> = {};
     const restoredTags: Record<string, string> = {};
@@ -277,7 +275,43 @@ export function ActivityRecordForm({
       setPhotoAssignments(restoredAssignments);
     if (Object.keys(restoredTags).length > 0) setPhotoActivityTags(restoredTags);
     if (handoff.analysis) setAnalysis(handoff.analysis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 진행 중인 모든 작업 상태 초기화 (반/교사 전환 시) */
+  function resetAllWork() {
+    setStep(1);
+    setImages([]);
+    setAnalysis(null);
+    setEditingAnalysis(false);
+    setSelectedPhotoIds(new Set());
+    setPhotoAssignments({});
+    setPhotoActivityTags({});
+    setDraftAssignments({});
+    setDraftTags({});
+    setSelectedChildId("");
+    setSavedMemos({});
+    setDirty(false);
+    setSavedOnce(false);
+    setDefaultAssignments({});
+    defaultComputedRef.current = false;
+    setSavedPhotosByChild({});
+    setSavedLoaded(false);
+    setShowClusterModal(false);
+    setShowLeaveDialog(false);
+    setError(null);
+    clearHandoff();
+  }
+
+  // 반/교사(스코프) 전환 시 진행 작업 초기화 — 이전 컨텍스트 작업 노출 방지
+  const scopeRef = useRef(`${classroomId}|${teacherId}`);
+  useEffect(() => {
+    const scope = `${classroomId}|${teacherId}`;
+    if (scopeRef.current === scope) return;
+    scopeRef.current = scope;
+    resetAllWork();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classroomId, teacherId]);
 
   // 분류 팝업 열림 중 ESC 키로 닫기 (작업본 폐기)
   useEffect(() => {
@@ -292,27 +326,37 @@ export function ActivityRecordForm({
   // 미저장 변경: 업로드한 사진이 있고, 아직 저장 안 했거나 저장 후 변경됨
   const hasUnsavedWork = images.length > 0 && (dirty || !savedOnce);
 
-  // 새로고침·탭 종료 등 하드 이탈 경고 (브라우저 기본)
+  // 미저장 시 이탈 경고 — 새로고침·탭 종료(하드) + 앱 내 다른 메뉴 이동(링크 클릭)
+  const pendingHrefRef = useRef<string | null>(null);
   useEffect(() => {
     if (!hasUnsavedWork) return;
     function onBeforeUnload(e: BeforeUnloadEvent) {
       e.preventDefault();
       e.returnValue = "";
     }
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [hasUnsavedWork]);
-
-  // 앱 내 이동(뒤로가기 등) 시 미저장이면 커스텀 경고
-  const pendingHrefRef = useRef<string | null>(null);
-  function attemptLeave(href: string) {
-    if (hasUnsavedWork) {
+    function onDocClickCapture(e: MouseEvent) {
+      if (showLeaveDialog) return;
+      const el = e.target as HTMLElement | null;
+      const a = el?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a) return;
+      const href = a.getAttribute("href");
+      if (!href || href.startsWith("#") || a.target === "_blank") return;
+      // 현재 페이지와 동일 URL이면 무시
+      if (href === window.location.pathname + window.location.search) return;
+      // 다른 메뉴 등으로 이동 시도 → 경고 후 보류
+      e.preventDefault();
+      e.stopPropagation();
       pendingHrefRef.current = href;
       setShowLeaveDialog(true);
-    } else {
-      router.push(href);
     }
-  }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onDocClickCapture, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onDocClickCapture, true);
+    };
+  }, [hasUnsavedWork, showLeaveDialog]);
+
   function confirmLeave() {
     setShowLeaveDialog(false);
     const href = pendingHrefRef.current;
@@ -794,8 +838,9 @@ export function ActivityRecordForm({
    * - 없으면 강아지 프로필 매칭으로 자동분류 디폴트를 계산(캐시)해 작업본에 채움
    */
   async function openClassifyModal() {
+    // 팝업 열 때 항상 1번(첫) 원아를 기본 선택
     if (children.length > 0) {
-      setSelectedChildId((prev) => prev || children[0].id);
+      setSelectedChildId(children[0].id);
     }
     setShowClusterModal(true);
     setDraftTags({ ...photoActivityTags });
@@ -857,22 +902,12 @@ export function ActivityRecordForm({
 
   return (
     <div className="space-y-6">
-      {/* 헤더 */}
+      {/* 헤더 (뒤로가기 버튼 제거 — 이탈 경고는 메뉴 이동/새로고침 시 유지) */}
       <section>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => attemptLeave(backHref)}
-            className="grid h-8 w-8 place-items-center rounded-full hover:bg-slate-100"
-            aria-label="뒤로"
-          >
-            <ChevronLeft className="h-5 w-5 text-slate-500" />
-          </button>
-          <h1 className="text-xl font-bold tracking-tight text-slate-900">
-            매일 활동 기록 · {step}단계 — {STEP_META[step].label}
-          </h1>
-        </div>
-        <p className="ml-10 mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+        <h1 className="text-xl font-bold tracking-tight text-slate-900">
+          매일 활동 기록 · {step}단계 — {STEP_META[step].label}
+        </h1>
+        <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
           {dateLabel} · {classroomName} · {STEP_META[step].sub}
         </p>
