@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Sparkles,
   ChevronRight,
   Pencil,
+  Check,
   Send,
   Loader2,
   ChevronDown,
@@ -13,18 +14,29 @@ import {
   X,
   HelpCircle,
   FileText,
+  Search,
+  Image as ImageIcon,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   generateNoteDraftAction,
   saveNoteAction,
   refineNoteAction,
-  addNoteParagraphAction,
   type RefineMode,
   type SourceMemo,
 } from "./actions";
 
 export type ChildOption = { id: string; name: string };
+export type ActivityOption = { id: string; date: string; title: string };
+export type PullItem = {
+  id: string;
+  kind: "note" | "memo";
+  childId: string;
+  date: string;
+  summary: string;
+  body: string;
+};
 
 const PRESET_KEYWORDS = [
   "또래상호작용",
@@ -51,11 +63,13 @@ export function NoteForm({
   qs,
   teacherId,
   classroomId,
+  activities,
 }: {
   childOptions: ChildOption[];
   qs: string;
   teacherId: string;
   classroomId: string;
+  activities: ActivityOption[];
 }) {
   const router = useRouter();
   const [step, setStep] = useState<Step>(1);
@@ -63,6 +77,12 @@ export function NoteForm({
   const [startDate, setStartDate] = useState(isoMinusDays(13));
   const [endDate, setEndDate] = useState(todayISO());
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
+  const [selectedActivities, setSelectedActivities] = useState<string[]>([]);
+
+  const periodActivities = useMemo(
+    () => activities.filter((a) => a.date >= startDate && a.date <= endDate),
+    [activities, startDate, endDate],
+  );
   const [draft, setDraft] = useState("");
   // 문단별 근거 라벨 (인라인 배지). draft 문단 순서와 1:1 대응, 없으면 null
   const [paragraphSources, setParagraphSources] = useState<(string | null)[]>([]);
@@ -72,6 +92,22 @@ export function NoteForm({
   const [isPending, startTransition] = useTransition();
   const [editMode, setEditMode] = useState(false);
   const [refining, setRefining] = useState<RefineMode | null>(null);
+
+  // 생활기록 (선택사항 — 입력한 항목만 본문 끝에 요약으로 덧붙여 저장)
+  const [lifeMood, setLifeMood] = useState<string | null>(null);
+  const [lifeHealth, setLifeHealth] = useState<string | null>(null);
+  const [lifeTemp, setLifeTemp] = useState<string | null>(null);
+  const [lifeMeal, setLifeMeal] = useState<string | null>(null);
+  const [lifeSleep, setLifeSleep] = useState<string | null>(null);
+  const [lifeBowel, setLifeBowel] = useState<string | null>(null);
+
+  // 상세입력 (자유 텍스트 항목 + 체온)
+  const [detailSnack, setDetailSnack] = useState<string[]>([]);
+  const [detailFeed, setDetailFeed] = useState<string[]>([]);
+  const [detailSleep, setDetailSleep] = useState<string[]>([]);
+  const [detailBowel, setDetailBowel] = useState<string[]>([]);
+  const [tempAm, setTempAm] = useState("");
+  const [tempPm, setTempPm] = useState("");
 
   const childName = children.find((c) => c.id === childId)?.name ?? "";
 
@@ -85,12 +121,15 @@ export function NoteForm({
     setError(null);
     setStep(2);
     startTransition(async () => {
+      const activityTitles = periodActivities
+        .filter((a) => selectedActivities.includes(a.id))
+        .map((a) => a.title);
       const result = await generateNoteDraftAction({
         childId,
         classroomId,
         startDate,
         endDate,
-        activities: [],
+        activities: activityTitles,
         keywords: selectedKeywords,
       });
       if (result.ok) {
@@ -148,25 +187,46 @@ export function NoteForm({
     });
   }
 
-  function addParagraph() {
-    setError(null);
-    startTransition(async () => {
-      const result = await addNoteParagraphAction({ content: draft });
-      if (result.ok) {
-        setDraft((prev) => (prev ? `${prev}\n\n${result.paragraph}` : result.paragraph));
-      } else setError(result.error);
-    });
-  }
-
   function save(status: "draft" | "published") {
     setError(null);
+    const lifeEntries: [string, string | null][] = [
+      ["기분", lifeMood],
+      ["건강", lifeHealth],
+      ["체온체크", lifeTemp],
+      ["식사여부", lifeMeal],
+      ["수면시간", lifeSleep],
+      ["배변상태", lifeBowel],
+    ];
+    const lifeLines = lifeEntries
+      .filter(([, v]) => v)
+      .map(([k, v]) => `• ${k}: ${v}`);
+
+    const detailEntries: [string, string[]][] = [
+      ["이유식/간식", detailSnack.filter(Boolean)],
+      ["수유여부", detailFeed.filter(Boolean)],
+      ["수면시간", detailSleep.filter(Boolean)],
+      ["배변상태", detailBowel.filter(Boolean)],
+    ];
+    const detailLines = detailEntries
+      .filter(([, arr]) => arr.length)
+      .map(([k, arr]) => `• ${k}: ${arr.join(", ")}`);
+    const tempLine =
+      tempAm || tempPm
+        ? `• 체온체크: ${tempAm ? `오전 ${tempAm}°C` : ""}${tempAm && tempPm ? " / " : ""}${tempPm ? `오후 ${tempPm}°C` : ""}`
+        : "";
+    if (tempLine) detailLines.push(tempLine);
+
+    const blocks = [draft];
+    if (lifeLines.length) blocks.push(`[생활기록]\n${lifeLines.join("\n")}`);
+    if (detailLines.length) blocks.push(`[상세입력]\n${detailLines.join("\n")}`);
+    const contentWithLife = blocks.join("\n\n");
     startTransition(async () => {
       const result = await saveNoteAction({
         childId,
         classroomId,
         teacherId,
         endDate,
-        content: draft,
+        content: contentWithLife,
         status,
       });
       if (result.ok) {
@@ -214,7 +274,7 @@ export function NoteForm({
 
       <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4">
         {/* 좌측 필터 */}
-        <section className="flex flex-col space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
+        <section className="flex flex-col space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {/* 아이 선택 */}
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
@@ -237,7 +297,7 @@ export function NoteForm({
           {/* 기간 선택 */}
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">기간 선택</p>
-            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1">
+            <div className="space-y-1">
               <input
                 type="date"
                 value={startDate}
@@ -245,7 +305,6 @@ export function NoteForm({
                 onChange={(e) => setStartDate(e.target.value)}
                 className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs focus:border-emerald-400 focus:outline-none"
               />
-              <span className="text-xs text-slate-400">~</span>
               <input
                 type="date"
                 value={endDate}
@@ -257,11 +316,33 @@ export function NoteForm({
             </div>
           </div>
 
+          {/* 활동 선택 */}
+          <ActivityDropdown
+            activities={periodActivities}
+            selected={selectedActivities}
+            onChange={setSelectedActivities}
+          />
+
           {/* 반영 키워드 */}
           <div>
-            <p className="mb-1.5 text-xs font-medium text-slate-600">
-              반영 키워드 (선택)
-            </p>
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <p className="text-xs font-medium text-slate-600">
+                반영 키워드 (선택)
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedKeywords((prev) =>
+                    prev.length === PRESET_KEYWORDS.length ? [] : [...PRESET_KEYWORDS],
+                  )
+                }
+                className="text-[10px] font-medium text-emerald-700 hover:underline"
+              >
+                {selectedKeywords.length === PRESET_KEYWORDS.length
+                  ? "전체 해제"
+                  : "전체 선택"}
+              </button>
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {PRESET_KEYWORDS.map((k) => {
                 const active = selectedKeywords.includes(k);
@@ -271,22 +352,19 @@ export function NoteForm({
                     type="button"
                     onClick={() => toggleKeyword(k)}
                     className={cn(
-                      "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      "h-7 rounded-full border px-2.5 text-[11px] font-medium transition-colors",
                       active
-                        ? "bg-emerald-600 text-white"
-                        : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+                        ? "border-emerald-500 bg-emerald-500 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
                     )}
                   >
                     {k}
-                    {active && (
-                      <X className="ml-0.5 inline-block h-2.5 w-2.5" />
-                    )}
                   </button>
                 );
               })}
               <button
                 type="button"
-                className="flex items-center gap-0.5 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-[11px] text-slate-500 hover:border-emerald-300 hover:text-emerald-600"
+                className="flex h-7 items-center gap-0.5 rounded-full border border-dashed border-slate-300 px-2.5 text-[11px] text-slate-500 hover:border-emerald-300 hover:text-emerald-600"
               >
                 <Plus className="h-3 w-3" />
                 키워드 추가
@@ -300,7 +378,7 @@ export function NoteForm({
             onClick={generate}
             disabled={isPending}
             className={cn(
-              "!mt-auto flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
+              "!mt-[80px] flex h-11 w-full items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors",
               isPending
                 ? "bg-emerald-300 text-white"
                 : "bg-emerald-600 text-white hover:bg-emerald-700",
@@ -321,7 +399,7 @@ export function NoteForm({
         </section>
 
         {/* 우측 초안 */}
-        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-bold">알림장 초안</p>
             <button
@@ -337,8 +415,8 @@ export function NoteForm({
                   : "border-slate-100 text-slate-300",
               )}
             >
-              <Pencil className="h-3.5 w-3.5" />
-              {editMode ? "보기" : "편집하기"}
+              {editMode ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+              {editMode ? "편집 저장" : "편집하기"}
             </button>
           </div>
 
@@ -366,11 +444,10 @@ export function NoteForm({
                 <textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  rows={14}
-                  className="w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm leading-relaxed text-slate-800 focus:border-emerald-400 focus:outline-none"
+                  className="block min-h-[22rem] w-full resize-none overflow-y-auto rounded-xl border border-emerald-200 bg-white p-4 text-sm leading-relaxed text-slate-800 focus:border-emerald-400 focus:outline-none"
                 />
               ) : (
-                <div className="space-y-3 rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-800">
+                <div className="block min-h-[22rem] space-y-3 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-800">
                   {draft.split(/\n\s*\n/).map((para, i) => (
                     <p key={i} className="whitespace-pre-wrap">
                       {para}
@@ -393,28 +470,10 @@ export function NoteForm({
                 <RefineBtn label="짧게" mode="shorten" busy={refining} onClick={refine} />
                 <RefineBtn label="따뜻하게" mode="warmer" busy={refining} onClick={refine} />
                 <RefineBtn label="공식적으로" mode="formal" busy={refining} onClick={refine} />
-                <span className="mx-1.5 h-4 w-px bg-slate-200" />
-                <button
-                  type="button"
-                  onClick={addParagraph}
-                  disabled={isPending}
-                  className="flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                >
-                  단락 추가
-                </button>
               </div>
 
-              <p className="mt-3 text-[11px] text-slate-400">
-                * 각 문단 옆의{" "}
-                <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
-                  근거 배지
-                </span>
-                는 해당 내용의 출처 기록입니다. 현재는 예시(가안)이며, 메모가 연동되면
-                실제 기록으로 표시됩니다.
-              </p>
-
               {/* 생성 근거 표시 */}
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+              <div className="mt-[30px] rounded-xl bg-slate-50 p-3">
                 <button
                   type="button"
                   onClick={() => setShowSources((v) => !v)}
@@ -453,9 +512,62 @@ export function NoteForm({
                       ))}
                     </ul>
                   ))}
+                {showSources && (
+                  <p className="mt-3 border-t border-slate-200 pt-2 text-[11px] text-slate-400">
+                    * 각 문단 옆의{" "}
+                    <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                      근거 배지
+                    </span>
+                    는 해당 내용의 출처 기록입니다. 현재는 예시(가안)이며, 메모가 연동되면 실제 기록으로 표시됩니다.
+                  </p>
+                )}
               </div>
             </>
           )}
+        </section>
+      </div>
+
+      {/* 생활기록 + 상세입력 (2칼럼) */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* 생활기록 */}
+        <section className="space-y-2.5 rounded-xl bg-slate-50 p-4">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-xs font-semibold text-slate-700">생활기록</h3>
+            <span className="text-[10px] text-slate-400">입력한 항목만 전송됩니다.</span>
+          </div>
+          <LifeField label="기분" options={["좋음", "보통", "나쁨"]} value={lifeMood} onChange={setLifeMood} />
+          <LifeField label="건강" options={["좋음", "보통", "나쁨"]} value={lifeHealth} onChange={setLifeHealth} />
+          <LifeField label="체온체크" options={["정상", "미열", "고열"]} value={lifeTemp} onChange={setLifeTemp} />
+          <LifeField label="식사여부" options={["정량", "많이", "적게", "안했음"]} value={lifeMeal} onChange={setLifeMeal} />
+          <LifeField
+            label="수면시간"
+            options={["안 잤어요", "1시간 미만", "1~1시간30분", "1시간30분~2시간", "2시간 이상"]}
+            value={lifeSleep}
+            onChange={setLifeSleep}
+          />
+          <LifeField
+            label="배변상태"
+            options={["보통", "딱딱함", "묽음", "설사", "안했음"]}
+            value={lifeBowel}
+            onChange={setLifeBowel}
+          />
+        </section>
+
+        {/* 상세입력 */}
+        <section className="space-y-2.5 rounded-xl bg-slate-50 p-4">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-xs font-semibold text-slate-700">상세입력</h3>
+            <span className="text-[10px] text-slate-400">입력한 항목만 전송됩니다.</span>
+          </div>
+          <DetailListField label="이유식/간식" items={detailSnack} onChange={setDetailSnack} placeholder="예: 사과 한 조각" />
+          <DetailListField label="수유여부" items={detailFeed} onChange={setDetailFeed} placeholder="예: 분유 120ml" />
+          <DetailListField label="수면시간" items={detailSleep} onChange={setDetailSleep} placeholder="예: 13:00~14:30" />
+          <DetailListField label="배변상태" items={detailBowel} onChange={setDetailBowel} placeholder="예: 10:00 보통" />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
+            <p className="text-[11px] font-medium text-slate-500">체온체크</p>
+            <TempInput label="오전" value={tempAm} onChange={setTempAm} />
+            <TempInput label="오후" value={tempPm} onChange={setTempPm} />
+          </div>
         </section>
       </div>
 
@@ -526,37 +638,163 @@ function StepIndicator({ step }: { step: Step }) {
     { n: 4, label: "저장 및 발송" },
   ];
   return (
-    <div className="rounded-xl border border-slate-200 bg-white px-5 py-3">
-      <ol className="flex items-center justify-between gap-2 text-sm">
+    <div className="rounded-xl bg-white px-3 py-1.5">
+      <ol className="flex items-center justify-between gap-1 text-sm">
         {steps.map((s, i) => {
           const active = step === s.n;
           return (
             <Fragment key={s.n}>
               <li
                 className={cn(
-                  "flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors",
-                  active ? "bg-emerald-700 text-white" : "text-slate-500",
+                  "flex items-center gap-1.5 rounded-full px-2 py-1 transition-colors",
+                  active ? "text-slate-900" : "text-slate-400",
                 )}
               >
                 <span
                   className={cn(
                     "grid h-5 w-5 place-items-center rounded-full text-[11px] font-bold",
                     active
-                      ? "bg-white text-emerald-700"
+                      ? "bg-slate-900 text-white"
                       : "border border-slate-300 text-slate-400",
                   )}
                 >
                   {s.n}
                 </span>
-                <span className="whitespace-nowrap font-medium">{s.label}</span>
+                <span
+                  className={cn(
+                    "whitespace-nowrap",
+                    active ? "font-bold" : "font-medium",
+                  )}
+                >
+                  {s.label}
+                </span>
               </li>
               {i < steps.length - 1 && (
-                <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-300" />
               )}
             </Fragment>
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+function DetailListField({
+  label,
+  items,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  items: string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+      <p className="mt-1.5 w-16 shrink-0 text-[11px] font-medium text-slate-500">{label}</p>
+      <div className="min-w-0 flex-1 space-y-1">
+        {items.map((v, i) => (
+          <div key={i} className="flex items-center gap-1">
+            <input
+              type="text"
+              value={v}
+              placeholder={placeholder}
+              onChange={(e) => {
+                const next = [...items];
+                next[i] = e.target.value;
+                onChange(next);
+              }}
+              className="h-7 flex-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-700 focus:border-emerald-400 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => onChange(items.filter((_, idx) => idx !== i))}
+              aria-label="삭제"
+              className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange([...items, ""])}
+          className="inline-flex h-6 items-center gap-0.5 rounded text-[11px] font-medium text-emerald-700 hover:text-emerald-800"
+        >
+          <Plus className="h-3 w-3" />
+          항목추가
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TempInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[11px] text-slate-500">{label}</span>
+      <div className="relative">
+        <input
+          type="number"
+          step="0.1"
+          value={value}
+          placeholder="36.5"
+          onChange={(e) => onChange(e.target.value)}
+          className="h-7 w-20 rounded-md border border-slate-200 bg-white pl-2 pr-7 text-[11px] text-slate-700 focus:border-emerald-400 focus:outline-none"
+        />
+        <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">
+          °C
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LifeField({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  value: string | null;
+  onChange: (v: string | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <p className="w-14 shrink-0 text-[11px] font-medium text-slate-500">{label}</p>
+      <div className="grid flex-1 auto-cols-fr grid-flow-col overflow-hidden rounded-md border border-slate-200 bg-white">
+        {options.map((opt, i) => {
+          const active = value === opt;
+          return (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => onChange(active ? null : opt)}
+              className={cn(
+                "h-8 text-xs font-medium transition-colors",
+                i > 0 && "border-l border-slate-200",
+                active
+                  ? "bg-emerald-500 text-white"
+                  : "text-slate-600 hover:bg-slate-50",
+              )}
+            >
+              {opt}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -592,3 +830,236 @@ function RefineBtn({
   );
 }
 
+function ActivityDropdown({
+  activities,
+  selected,
+  onChange,
+}: {
+  activities: ActivityOption[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const disabled = activities.length === 0;
+  const allSelected = activities.length > 0 && selected.length === activities.length;
+  const label =
+    activities.length === 0
+      ? "기간 내 활동 없음"
+      : selected.length === 0
+        ? "전체 활동"
+        : `${selected.length}개 선택`;
+
+  function toggle(id: string) {
+    onChange(
+      selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id],
+    );
+  }
+
+  return (
+    <div className="relative">
+      <p className="mb-1.5 text-xs font-medium text-slate-600">활동 선택 (선택)</p>
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        className={cn(
+          "flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-xs",
+          disabled ? "text-slate-400" : "text-slate-700 hover:bg-slate-50",
+        )}
+      >
+        <span className="truncate">{label}</span>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-slate-100 px-2 py-1.5">
+              <span className="text-[10px] text-slate-500">
+                {selected.length}/{activities.length} 선택
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange(allSelected ? [] : activities.map((a) => a.id))
+                }
+                className="text-[10px] font-medium text-emerald-700 hover:underline"
+              >
+                {allSelected ? "전체 해제" : "전체 선택"}
+              </button>
+            </div>
+            <ul className="max-h-48 overflow-y-auto p-1">
+              {activities.map((a) => {
+                const checked = selected.includes(a.id);
+                return (
+                  <li key={a.id}>
+                    <button
+                      type="button"
+                      onClick={() => toggle(a.id)}
+                      className={cn(
+                        "flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-[11px] transition-colors",
+                        checked
+                          ? "bg-emerald-50 text-emerald-800"
+                          : "text-slate-700 hover:bg-slate-50",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "grid h-3.5 w-3.5 shrink-0 place-items-center rounded border",
+                          checked
+                            ? "border-emerald-500 bg-emerald-500 text-white"
+                            : "border-slate-300 bg-white",
+                        )}
+                      >
+                        {checked && <Check className="h-2.5 w-2.5" />}
+                      </span>
+                      <span className="w-12 shrink-0 text-[10px] text-slate-400">
+                        {a.date.slice(5)}
+                      </span>
+                      <span className="flex-1 truncate">{a.title}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PullPanel({
+  items,
+  children,
+  currentChildId,
+  onInsert,
+}: {
+  items: PullItem[];
+  children: ChildOption[];
+  currentChildId: string;
+  onInsert: (text: string) => void;
+}) {
+  const [tab, setTab] = useState<"all" | "note" | "memo">("all");
+  const [q, setQ] = useState("");
+  const [filterMine, setFilterMine] = useState(true);
+
+  const filtered = useMemo(() => {
+    return items
+      .filter((it) => (tab === "all" ? true : it.kind === tab))
+      .filter((it) => (filterMine ? it.childId === currentChildId : true))
+      .filter((it) =>
+        q.trim() ? it.summary.toLowerCase().includes(q.trim().toLowerCase()) : true,
+      )
+      .slice(0, 40);
+  }, [items, tab, filterMine, currentChildId, q]);
+
+  return (
+    <aside className="space-y-2.5 self-start rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:sticky lg:top-6">
+      <div className="flex items-center gap-1.5">
+        <Plus className="h-4 w-4 text-emerald-600" />
+        <h2 className="text-sm font-bold text-slate-900">추가하기</h2>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        기존 활동 메모·알림장을 본문에 인용할 수 있어요.
+      </p>
+
+      <div className="inline-flex w-full overflow-hidden rounded-lg border border-slate-200 text-xs">
+        {(
+          [
+            { k: "all", label: "전체" },
+            { k: "note", label: "알림장" },
+            { k: "memo", label: "활동 메모" },
+          ] as const
+        ).map((t, i) => (
+          <button
+            key={t.k}
+            type="button"
+            onClick={() => setTab(t.k)}
+            className={cn(
+              "flex-1 py-1.5 text-[11px] font-medium",
+              i > 0 && "border-l border-slate-200",
+              tab === t.k
+                ? "bg-slate-800 text-white"
+                : "bg-white text-slate-600 hover:bg-slate-50",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="내용 검색"
+          className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2 text-[11px] focus:border-emerald-400 focus:outline-none"
+        />
+      </div>
+
+      <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+        <input
+          type="checkbox"
+          checked={filterMine}
+          onChange={(e) => setFilterMine(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+        />
+        현재 원아만 보기
+      </label>
+
+      <ul className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
+        {filtered.length === 0 ? (
+          <li className="rounded-lg bg-slate-50 py-8 text-center text-[11px] text-slate-400">
+            인용할 수 있는 항목이 없어요
+          </li>
+        ) : (
+          filtered.map((it) => {
+            const childName =
+              children.find((c) => c.id === it.childId)?.name ?? "";
+            return (
+              <li key={`${it.kind}-${it.id}`}>
+                <button
+                  type="button"
+                  onClick={() => onInsert(it.body)}
+                  className="group w-full rounded-lg border border-slate-100 bg-white p-2.5 text-left hover:border-emerald-200 hover:bg-emerald-50/40"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium">
+                      {it.kind === "note" ? (
+                        <MessageSquare className="h-3 w-3 text-emerald-600" />
+                      ) : (
+                        <ImageIcon className="h-3 w-3 text-amber-500" />
+                      )}
+                      <span className="text-slate-600">
+                        {it.kind === "note" ? "알림장" : "활동 메모"}
+                      </span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">{it.date}</span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-700">
+                    {it.summary}
+                  </p>
+                  {childName && (
+                    <p className="mt-1 text-[10px] text-slate-400">{childName}</p>
+                  )}
+                </button>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </aside>
+  );
+}

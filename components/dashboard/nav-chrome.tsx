@@ -58,7 +58,7 @@ const MENU: {
   { href: "/dashboard/observations", label: "관찰일지", icon: BookOpen,
     roles: ["teacher"],
     children: [
-      { href: "/dashboard/observations/new", label: "관찰기록 작성" },
+      { href: "/dashboard/observations/new", label: "관찰일지 작성" },
       { href: "/dashboard/observations", label: "관찰일지 목록" },
       { href: "/dashboard/observations/timeline", label: "발달타임라인" },
     ] },
@@ -76,6 +76,7 @@ const MENU: {
     roles: ["director", "admin"] },
   { href: "/dashboard/settings", label: "설정", icon: Settings,
     roles: ["director", "admin"] },
+  { href: "/dashboard/notes", label: "알림장", icon: MessageSquare, roles: ["teacher"] },
 ];
 
 // 시드 UUID — `?user=` 미지정 시 각 역할의 기본 페르소나

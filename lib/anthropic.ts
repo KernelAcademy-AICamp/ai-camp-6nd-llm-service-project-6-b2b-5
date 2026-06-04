@@ -9,4 +9,4 @@ export function getAnthropic(): Anthropic {
   return client;
 }
 
-export const MODEL = "claude-Haiku-4-5";
+export const MODEL = "claude-haiku-4-5";

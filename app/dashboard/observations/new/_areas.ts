@@ -15,3 +15,6 @@ export const AREA_LABELS: Record<AreaKey, string> = {
   artistic: "예술경험",
   nature: "자연탐구",
 };
+
+export const KIND_OPTIONS = ["일상생활", "놀이"] as const;
+export type KindOption = (typeof KIND_OPTIONS)[number];

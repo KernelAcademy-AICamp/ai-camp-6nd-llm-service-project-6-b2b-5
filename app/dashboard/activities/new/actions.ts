@@ -77,11 +77,6 @@ export async function analyzePhotosAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1500,
-      thinking: { type: "adaptive" },
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: ANALYSIS_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -185,11 +180,6 @@ export async function clusterPhotosAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1500,
-      thinking: { type: "adaptive" },
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: CLUSTER_SCHEMA },
-      },
       system: [
         {
           type: "text",
@@ -282,8 +272,6 @@ export async function generateChildActivityMemoAction(args: {
     const stream = client.messages.stream({
       model: MODEL,
       max_tokens: 1200,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
       system: [
         {
           type: "text",
@@ -401,11 +389,6 @@ export async function generateChildSummariesAction(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4000,
-      thinking: { type: "adaptive" },
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: SUMMARIES_SCHEMA },
-      },
       system: [
         {
           type: "text",
