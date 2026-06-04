@@ -21,6 +21,7 @@ import {
   generateChildSummariesAction,
   saveActivityRecordAction,
   loadSavedChildPhotosAction,
+  loadResumeSessionAction,
   autoClassifyByProfileAction,
   type PhotoAnalysis,
 } from "./actions";
@@ -217,6 +218,13 @@ export function ActivityRecordForm({
   const [savedOnce, setSavedOnce] = useState(false);
   // 페이지 이탈 경고 (미저장 변경 시)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
+  // 재진입 이어쓰기 — 오늘 저장된 1단계가 있는데 2단계 미작성 시
+  const [resumeData, setResumeData] = useState<{
+    analysis: PhotoAnalysis;
+    photos: { id: string; url: string; childId: string }[];
+  } | null>(null);
+  const [showResumeDialog, setShowResumeDialog] = useState(false);
+  const resumeCheckedRef = useRef(false);
   // 분류 팝업 중앙 드롭존 하이라이트
   const [centerDropActive, setCenterDropActive] = useState(false);
   // 데모 강아지 자동분류 디폴트 (캐시) + 진행 상태
@@ -312,6 +320,58 @@ export function ActivityRecordForm({
     resetAllWork();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classroomId, teacherId]);
+
+  // 재진입 이어쓰기 — 오늘 저장된 1단계가 있고 2단계 미작성이면 다이얼로그
+  useEffect(() => {
+    if (resumeCheckedRef.current) return;
+    resumeCheckedRef.current = true;
+    if (!classroomId || initialStep === 2) return;
+    // 진행 중(handoff) 작업이 있으면 이어쓰기 묻지 않음(그 작업 우선)
+    const handoff = loadHandoff();
+    if (
+      handoff &&
+      (!handoff.classroomName || handoff.classroomName === classroomName)
+    )
+      return;
+    void loadResumeSessionAction({ classroomId, date: isoToday() }).then(
+      (res) => {
+        if (res.ok && res.exists && !res.hasStep2) {
+          setResumeData({ analysis: res.analysis, photos: res.photos });
+          setShowResumeDialog(true);
+        }
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 이어서 작성 — 저장된 1단계를 폼으로 복원하고 2단계로 진입 */
+  function applyResume() {
+    if (!resumeData) {
+      setShowResumeDialog(false);
+      return;
+    }
+    const imgs = resumeData.photos.map((p) => ({
+      id: p.id,
+      dataUrl: p.url,
+      name: p.id,
+    }));
+    const assign: Record<string, string> = {};
+    for (const p of resumeData.photos) assign[p.id] = p.childId;
+    setImages(imgs);
+    setSelectedPhotoIds(new Set(imgs.map((i) => i.id)));
+    setPhotoAssignments(assign);
+    setAnalysis(resumeData.analysis);
+    setSavedOnce(true);
+    setDirty(false);
+    setShowResumeDialog(false);
+    setStep(2);
+  }
+
+  /** 새로 작성 — 화면 초기화(저장 시 오늘 기록 덮어씀) */
+  function startFresh() {
+    setShowResumeDialog(false);
+    resetAllWork();
+  }
 
   // 분류 팝업 열림 중 ESC 키로 닫기 (작업본 폐기)
   useEffect(() => {
@@ -1925,6 +1985,42 @@ export function ActivityRecordForm({
           과 알림장·관찰일지 작성에 자동으로 활용돼요.
         </p>
       </section>
+
+      {/* 재진입 이어쓰기 — 새로 작성(좌) / 이어서 작성(우·primary) */}
+      {showResumeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <p className="text-sm font-bold text-slate-900">
+              오늘 저장한 활동 기록이 있어요
+            </p>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+              {dateLabel}의 매일 활동 기록이 저장돼 있어요. 이어서 원아 활동
+              기록을 작성할까요?
+              <br />
+              <span className="text-rose-600">
+                새로 작성하면 저장 시 오늘 기록을 덮어쓸 수 있어요.
+              </span>
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={startFresh}
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              >
+                새로 작성
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={applyResume}
+                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                이어서 작성
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 페이지 이탈 경고 — 아니오(머무르기, 좌) / 네(나가기, 우·위험) */}
       {showLeaveDialog && (

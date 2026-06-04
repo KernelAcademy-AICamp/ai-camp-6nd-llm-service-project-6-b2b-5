@@ -911,3 +911,132 @@ export async function deleteActivityAction(args: {
     return { ok: false, error: e instanceof Error ? e.message : "삭제 실패" };
   }
 }
+
+// =============================================================
+// 재진입 이어쓰기 — 오늘(해당 반) 저장된 1단계를 폼으로 복원
+// =============================================================
+
+function parseSessionAi(
+  title: string | null,
+  content: string | null,
+): {
+  activity_title: string;
+  activity_description: string;
+  keywords: string[];
+  suggestion: string;
+} {
+  let activityTitle = title ?? "";
+  let description = "";
+  let keywords: string[] = [];
+  let suggestion = "";
+  for (const l of (content ?? "").split("\n")) {
+    if (l.startsWith("[활동]")) {
+      if (!activityTitle) activityTitle = l.replace("[활동]", "").trim();
+    } else if (l.startsWith("[키워드]")) {
+      keywords = l
+        .replace("[키워드]", "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } else if (l.startsWith("[추천]")) {
+      suggestion = l.replace("[추천]", "").trim();
+    } else if (l.trim() && !l.startsWith("[")) {
+      description += (description ? "\n" : "") + l.trim();
+    }
+  }
+  return {
+    activity_title: activityTitle || "활동 기록",
+    activity_description: description,
+    keywords,
+    suggestion,
+  };
+}
+
+export type ResumePhoto = { id: string; url: string; childId: string };
+
+/**
+ * 오늘(해당 반) 저장된 활동 기록(1단계)을 폼 복원용으로 반환.
+ * 사진은 서명 URL(표시용). 2단계 작성 진입 시 사용.
+ */
+export async function loadResumeSessionAction(args: {
+  classroomId: string;
+  date: string;
+}): Promise<
+  | { ok: true; exists: false }
+  | {
+      ok: true;
+      exists: true;
+      hasStep2: boolean;
+      analysis: PhotoAnalysis;
+      photos: ResumePhoto[];
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    if (!args.classroomId) return { ok: true, exists: false };
+    const supabase = createAdminClient();
+    const { data: session } = await supabase
+      .from("activity_sessions")
+      .select("id, title")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+    if (!session) return { ok: true, exists: false };
+
+    const sessionId = (session as { id: string; title: string | null }).id;
+    const title = (session as { id: string; title: string | null }).title;
+
+    const [{ data: recs }, { data: caps }] = await Promise.all([
+      supabase
+        .from("activity_records")
+        .select("child_id, session_ai_content, ai_content")
+        .eq("session_id", sessionId),
+      supabase
+        .from("child_activity_photos")
+        .select("child_id, file_id, order_num, files ( bucket, storage_path, url )")
+        .eq("session_id", sessionId)
+        .order("order_num", { ascending: true }),
+    ]);
+
+    const records = (recs ?? []) as {
+      child_id: string;
+      session_ai_content: string | null;
+      ai_content: string | null;
+    }[];
+    const hasStep2 = records.some((r) => (r.ai_content ?? "").trim().length > 0);
+    const parsed = parseSessionAi(title, records[0]?.session_ai_content ?? null);
+
+    const photos: ResumePhoto[] = [];
+    for (const c of (caps ?? []) as {
+      child_id: string;
+      file_id: string;
+      files:
+        | { bucket: string; storage_path: string; url: string }
+        | { bucket: string; storage_path: string; url: string }[]
+        | null;
+    }[]) {
+      const file = Array.isArray(c.files) ? c.files[0] : c.files;
+      if (!file) continue;
+      let url = file.url;
+      try {
+        const { data: signed } = await supabase.storage
+          .from(file.bucket || PHOTO_BUCKET)
+          .createSignedUrl(file.storage_path, 3600);
+        if (signed?.signedUrl) url = signed.signedUrl;
+      } catch {
+        // fallback
+      }
+      photos.push({ id: c.file_id, url, childId: c.child_id });
+    }
+
+    const analysis: PhotoAnalysis = {
+      ...parsed,
+      estimated_children: new Set(photos.map((p) => p.childId)).size,
+    };
+
+    return { ok: true, exists: true, hasStep2, analysis, photos };
+  } catch (e) {
+    console.error("[활동기록] 이어쓰기 로드 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "불러오기 실패" };
+  }
+}
