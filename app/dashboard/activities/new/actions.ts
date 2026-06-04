@@ -815,63 +815,6 @@ export async function saveActivityRecordAction(args: {
   }
 }
 
-/**
- * 특정 세션에서 원아별로 저장된 사진을 다시 불러온다. (저장 검증용)
- * 반환: childId -> 사진 URL 배열
- */
-export async function loadSavedChildPhotosAction(args: {
-  classroomId: string;
-  date: string;
-}): Promise<
-  | { ok: true; sessionId: string | null; byChild: Record<string, string[]> }
-  | { ok: false; error: string }
-> {
-  try {
-    const supabase = createAdminClient();
-    const { data: session } = await supabase
-      .from("activity_sessions")
-      .select("id")
-      .eq("classroom_id", args.classroomId)
-      .eq("date", args.date)
-      .maybeSingle();
-    const sessionId = (session as { id: string } | null)?.id ?? null;
-    if (!sessionId) return { ok: true, sessionId: null, byChild: {} };
-
-    const { data: rows } = await supabase
-      .from("child_activity_photos")
-      .select("child_id, order_num, files ( bucket, storage_path, url )")
-      .eq("session_id", sessionId)
-      .order("order_num", { ascending: true });
-
-    const byChild: Record<string, string[]> = {};
-    for (const r of (rows ?? []) as Array<{
-      child_id: string;
-      files:
-        | { bucket: string; storage_path: string; url: string }
-        | { bucket: string; storage_path: string; url: string }[]
-        | null;
-    }>) {
-      const file = Array.isArray(r.files) ? r.files[0] : r.files;
-      if (!file) continue;
-      // private 버킷 대응 — 1시간 서명 URL 생성, 실패 시 저장된 url 사용
-      let viewUrl = file.url;
-      try {
-        const { data: signed } = await supabase.storage
-          .from(file.bucket)
-          .createSignedUrl(file.storage_path, 3600);
-        if (signed?.signedUrl) viewUrl = signed.signedUrl;
-      } catch {
-        // 무시 — fallback url 사용
-      }
-      (byChild[r.child_id] ??= []).push(viewUrl);
-    }
-    return { ok: true, sessionId, byChild };
-  } catch (e) {
-    console.error("[활동기록] 저장 사진 조회 실패", e);
-    return { ok: false, error: e instanceof Error ? e.message : "조회 실패" };
-  }
-}
-
 // =============================================================
 // 데모 — 강아지 사진 기반 원아별 자동 분류
 // 업로드 사진 ↔ 원아 프로필 강아지를 외형(견종)으로 매칭한다.
