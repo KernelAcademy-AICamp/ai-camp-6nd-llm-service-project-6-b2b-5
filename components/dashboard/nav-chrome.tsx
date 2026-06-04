@@ -14,7 +14,6 @@ import {
   PencilLine,
   MessageSquare,
   BookOpen,
-  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -47,8 +46,8 @@ const MENU: {
   { href: "/dashboard/activities", label: "활동 기록", icon: Camera,
     roles: ["teacher"],
     children: [
-      { href: "/dashboard/activities/new", label: "활동 기록 작성" },
       { href: "/dashboard/activities", label: "활동 기록 목록" },
+      { href: "/dashboard/activities/new", label: "활동 기록 작성" },
     ] },
   { href: "/dashboard/today-memo", label: "한줄기록", icon: PencilLine,
     roles: ["teacher"] },
@@ -213,75 +212,54 @@ export function NavChrome({
               const itemQuery = item.href.includes("?")
                 ? new URLSearchParams(item.href.split("?")[1])
                 : new URLSearchParams();
-              const isActive =
-                pathname === itemPath &&
-                Array.from(itemQuery.entries()).every(
-                  ([k, v]) => sp.get(k) === v
-                );
-
-              // 하위메뉴가 있는 항목 (예: 알림장) — 해당 섹션 경로일 때 펼침
-              if (item.children) {
-                const sectionOpen = pathname.startsWith(itemPath);
-                return (
-                  <div key={item.href}>
-                    <Link
-                      href={buildMenuHref(item.children[0]?.href ?? item.href)}
-                      className={cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-                        sectionOpen
-                          ? "bg-emerald-50 text-emerald-700 font-medium"
-                          : "text-foreground hover:bg-accent"
-                      )}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                      <ChevronDown
-                        className={cn(
-                          "ml-auto h-4 w-4 transition-transform",
-                          sectionOpen ? "rotate-180" : "rotate-0"
-                        )}
-                      />
-                    </Link>
-                    {sectionOpen && (
-                      <div className="mt-1 ml-7 space-y-1">
-                        {item.children.map((sub) => {
-                          const subPath = sub.href.split("?")[0];
-                          const subActive = pathname === subPath;
-                          return (
-                            <Link
-                              key={sub.href}
-                              href={buildMenuHref(sub.href)}
-                              className={cn(
-                                "block px-3 py-1.5 rounded-md text-sm transition-colors",
-                                subActive
-                                  ? "text-emerald-700 font-semibold"
-                                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                              )}
-                            >
-                              {sub.label}
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-
+              const hasChildren = !!item.children?.length;
+              // 하위 메뉴가 있으면 섹션(경로 prefix) 활성 시 펼침
+              const sectionActive =
+                hasChildren && pathname.startsWith(itemPath);
+              const isActive = hasChildren
+                ? sectionActive
+                : pathname === itemPath &&
+                  Array.from(itemQuery.entries()).every(
+                    ([k, v]) => sp.get(k) === v
+                  );
               return (
-                <Link
-                  key={item.href}
-                  href={buildMenuHref(item.href)}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-foreground hover:bg-accent"
+                <div key={item.href}>
+                  <Link
+                    href={buildMenuHref(item.href)}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "text-foreground hover:bg-accent"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </Link>
+                  {hasChildren && sectionActive && (
+                    <div className="ml-7 mt-1 space-y-1">
+                      {item.children!.map((ch) => {
+                        const chPath = ch.href.split("?")[0];
+                        const chActive = pathname === chPath;
+                        return (
+                          <Link
+                            key={ch.href}
+                            href={buildMenuHref(ch.href)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors",
+                              chActive
+                                ? "bg-accent font-medium text-foreground"
+                                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                            )}
+                          >
+                            <span className="h-1 w-1 rounded-full bg-current opacity-60" />
+                            {ch.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
                   )}
-                >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
-                </Link>
+                </div>
               );
             })}
           </nav>
