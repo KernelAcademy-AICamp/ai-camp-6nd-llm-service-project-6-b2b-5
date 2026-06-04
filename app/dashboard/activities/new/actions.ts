@@ -871,3 +871,43 @@ export async function autoClassifyByProfileAction(args: {
 // 저장 대상은 activity_records.ai_content (+ ai_generated_at) — 컬럼은 준비됨.
 // (session_id, child_id) 당 1행 upsert. 1단계 저장으로 세션이 먼저 생성돼 있어야 함.
 // =============================================================
+
+/**
+ * 활동 기록 삭제 (편집 불가·삭제만 지원).
+ * - childId 지정: 해당 원아의 분류 사진 + 기록만 삭제
+ * - childId 없음: 세션 전체 삭제 (cascade로 원아 기록·사진 링크 제거)
+ * 참고: files/Storage 원본은 데모상 정리 생략(고아 가능) — 보관정책 정리 작업에서 처리.
+ */
+export async function deleteActivityAction(args: {
+  sessionId: string;
+  childId?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    if (!args.sessionId) return { ok: false, error: "세션 정보가 없어요." };
+    const supabase = createAdminClient();
+    if (args.childId) {
+      await supabase
+        .from("child_activity_photos")
+        .delete()
+        .eq("session_id", args.sessionId)
+        .eq("child_id", args.childId);
+      await supabase
+        .from("activity_records")
+        .delete()
+        .eq("session_id", args.sessionId)
+        .eq("child_id", args.childId);
+    } else {
+      // 세션 삭제 → child_activity_photos / activity_records 는 FK cascade
+      const { error } = await supabase
+        .from("activity_sessions")
+        .delete()
+        .eq("id", args.sessionId);
+      if (error) return { ok: false, error: error.message };
+    }
+    revalidatePath("/dashboard/activities");
+    return { ok: true };
+  } catch (e) {
+    console.error("[활동기록] 삭제 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "삭제 실패" };
+  }
+}

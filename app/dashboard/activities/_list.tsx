@@ -26,6 +26,7 @@ export type SessionRow = {
 };
 
 export type ChildRecordRow = {
+  sessionId: string;
   childId: string;
   childName: string;
   date: string;
@@ -48,6 +49,12 @@ function withinPeriod(date: string, period: Period): boolean {
   return new Date(date) >= cutoff;
 }
 
+function withinRange(date: string, from: string, to: string): boolean {
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
 function formatDate(d: string): string {
   const [y, m, day] = d.split("-");
   return `${y}.${m}.${day}`;
@@ -58,16 +65,26 @@ export function ActivityListClient({
   childRecords,
   classrooms,
   writeHref,
+  qs,
 }: {
   sessions: SessionRow[];
   childRecords: ChildRecordRow[];
   classrooms: { id: string; name: string }[];
   writeHref: string;
+  qs: string; // "?role=...&user=..."
 }) {
   const [tab, setTab] = useState<Tab>("all");
   const [period, setPeriod] = useState<Period>("all");
   const [classroomId, setClassroomId] = useState<string>("all");
   const [keyword, setKeyword] = useState<string>("all");
+  // 기간 직접 입력(달력)
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+
+  /** 세션 상세 링크 */
+  const sessionHref = (id: string) => `/dashboard/activities/${id}${qs}`;
+  const childHref = (sessionId: string, childId: string) =>
+    `/dashboard/activities/${sessionId}${qs}${qs ? "&" : "?"}child=${childId}`;
 
   const hasAny = sessions.length > 0;
 
@@ -85,6 +102,7 @@ export function ActivityListClient({
     keywords: string[];
   }) =>
     withinPeriod(row.date, period) &&
+    withinRange(row.date, from, to) &&
     (classroomId === "all" || row.classroomId === classroomId) &&
     (keyword === "all" || row.keywords.includes(keyword));
 
@@ -109,6 +127,11 @@ export function ActivityListClient({
           </Button>
         </Link>
       </div>
+
+      {/* 보관 안내 */}
+      <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 ring-1 ring-amber-100">
+        원아 사진은 재원 기간 및 졸업/퇴소 후 1년까지만 보관됩니다.
+      </p>
 
       {!hasAny ? (
         <Card>
@@ -174,6 +197,44 @@ export function ActivityListClient({
                   </button>
                 ))}
               </div>
+              {/* 기간 직접 입력 (달력) */}
+              <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <input
+                  type="date"
+                  value={from}
+                  max={to || undefined}
+                  onChange={(e) => {
+                    setFrom(e.target.value);
+                    if (e.target.value) setPeriod("all");
+                  }}
+                  className="h-8 rounded-lg border bg-background px-2"
+                  aria-label="시작일"
+                />
+                <span>~</span>
+                <input
+                  type="date"
+                  value={to}
+                  min={from || undefined}
+                  onChange={(e) => {
+                    setTo(e.target.value);
+                    if (e.target.value) setPeriod("all");
+                  }}
+                  className="h-8 rounded-lg border bg-background px-2"
+                  aria-label="종료일"
+                />
+                {(from || to) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFrom("");
+                      setTo("");
+                    }}
+                    className="rounded-md px-1.5 py-1 text-muted-foreground hover:bg-accent"
+                  >
+                    초기화
+                  </button>
+                )}
+              </div>
               {/* 반별 (담당 반 2개 이상일 때) */}
               {classrooms.length > 1 && (
                 <select
@@ -214,7 +275,8 @@ export function ActivityListClient({
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {filteredSessions.map((s) => (
-                  <Card key={s.id}>
+                  <Link key={s.id} href={sessionHref(s.id)} className="block">
+                  <Card className="transition-colors hover:border-primary/40 hover:bg-accent/30">
                     <CardHeader className="pb-3">
                       <div className="flex items-center justify-between gap-2">
                         <CardTitle className="text-base">{s.title}</CardTitle>
@@ -244,6 +306,7 @@ export function ActivityListClient({
                       </div>
                     </CardContent>
                   </Card>
+                  </Link>
                 ))}
               </div>
             )
@@ -252,7 +315,12 @@ export function ActivityListClient({
           ) : (
             <div className="space-y-2">
               {filteredChildRecords.map((r, i) => (
-                <Card key={`${r.childId}-${r.date}-${i}`}>
+                <Link
+                  key={`${r.childId}-${r.date}-${i}`}
+                  href={childHref(r.sessionId, r.childId)}
+                  className="block"
+                >
+                  <Card className="transition-colors hover:border-primary/40 hover:bg-accent/30">
                   <CardContent className="flex items-start gap-3 py-3">
                     <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">
                       {r.childName.charAt(0)}
@@ -282,6 +350,7 @@ export function ActivityListClient({
                     )}
                   </CardContent>
                 </Card>
+                </Link>
               ))}
             </div>
           )}

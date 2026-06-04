@@ -119,6 +119,7 @@ export default async function ActivityListPage({
       const s = sessionMeta.get(r.session_id);
       if (!s) continue;
       childRecords.push({
+        sessionId: s.id,
         childId: r.child_id,
         childName: childName.get(r.child_id) ?? "원아",
         date: s.date,
@@ -145,6 +146,7 @@ export default async function ActivityListPage({
         childRecords={childRecords}
         classrooms={classrooms.map((c) => ({ id: c.id, name: c.name }))}
         writeHref={`/dashboard/activities/new${qs}`}
+        qs={qs}
       />
     </main>
   );
