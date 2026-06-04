@@ -778,6 +778,13 @@ export function ActivityRecordForm({
           teacherId,
           date: isoToday(),
           activityTitle: analysis?.activity_title ?? null,
+          activityAnalysis: analysis
+            ? {
+                description: analysis.activity_description,
+                keywords: analysis.keywords,
+                suggestion: analysis.suggestion,
+              }
+            : null,
           children: groups,
         }),
         SAVE_TIMEOUT_MS,

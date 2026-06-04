@@ -6,6 +6,8 @@ import { getAnthropic, MODEL } from "@/lib/anthropic";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 const PHOTO_BUCKET = "child-photos";
+/** 원아 1명당 하루(세션) 활동 사진 상한 (저장 스펙) */
+const MAX_PHOTOS_PER_CHILD = 6;
 
 export type PhotoAnalysis = {
   activity_title: string;
@@ -468,6 +470,12 @@ export async function saveActivityRecordAction(args: {
   teacherId: string;
   date: string; // YYYY-MM-DD
   activityTitle: string | null;
+  /** 1단계 AI 활동 분석 — session_ai_content 로 저장 */
+  activityAnalysis?: {
+    description?: string;
+    keywords?: string[];
+    suggestion?: string;
+  } | null;
   children: SaveChildGroupInput[];
 }): Promise<
   | { ok: true; sessionId: string; savedPhotos: number; savedChildren: number }
@@ -523,6 +531,21 @@ export async function saveActivityRecordAction(args: {
         .eq("id", sessionId);
     }
 
+    // 2-1) 1단계 AI 활동 분석 → session_ai_content 텍스트 구성
+    const an = args.activityAnalysis;
+    const sessionAiContent =
+      args.activityTitle || an?.description || an?.keywords?.length
+        ? [
+            args.activityTitle ? `[활동] ${args.activityTitle}` : "",
+            an?.description ?? "",
+            an?.keywords?.length ? `[키워드] ${an.keywords.join(", ")}` : "",
+            an?.suggestion ? `[추천] ${an.suggestion}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : null;
+    const nowIso = new Date().toISOString();
+
     // 3) 재저장 멱등성 — 이 세션의 기존 분류 사진 링크 제거 후 재등록
     await supabase
       .from("child_activity_photos")
@@ -535,7 +558,9 @@ export async function saveActivityRecordAction(args: {
     for (const group of groups) {
       let childPhotoSaved = 0;
       let order = 0;
-      for (const photo of group.photos) {
+      // 원아당 하루 사진 상한 적용 (저장 스펙: 6장)
+      const childPhotos = group.photos.slice(0, MAX_PHOTOS_PER_CHILD);
+      for (const photo of childPhotos) {
         const parsed = parseDataUrl(photo.dataUrl);
         if (!parsed) continue;
         const ext = extFromMediaType(parsed.mediaType);
@@ -613,17 +638,23 @@ export async function saveActivityRecordAction(args: {
         .eq("child_id", group.childId)
         .maybeSingle();
       if ((rec as { id: string } | null)?.id) {
-        if (memo) {
-          await supabase
-            .from("activity_records")
-            .update({ memo, updated_by: args.teacherId })
-            .eq("id", (rec as { id: string }).id);
-        }
+        await supabase
+          .from("activity_records")
+          .update({
+            ...(memo ? { memo } : {}),
+            session_ai_content: sessionAiContent,
+            session_ai_generated_at: sessionAiContent ? nowIso : null,
+            updated_by: args.teacherId,
+          })
+          .eq("id", (rec as { id: string }).id);
       } else {
         await supabase.from("activity_records").insert({
           session_id: sessionId,
           child_id: group.childId,
           memo,
+          session_ai_content: sessionAiContent,
+          session_ai_generated_at: sessionAiContent ? nowIso : null,
+          created_by: args.teacherId,
           updated_by: args.teacherId,
         });
       }
@@ -833,3 +864,10 @@ export async function autoClassifyByProfileAction(args: {
     return { ok: false, error: e instanceof Error ? e.message : "자동 분류 실패" };
   }
 }
+
+// =============================================================
+// [2단계 원아별 메모 저장 — 자리(저장 구조만)]
+// 2단계(원아 활동 기록)의 원아별 메모 저장은 2단계 작업자가 구현한다.
+// 저장 대상은 activity_records.ai_content (+ ai_generated_at) — 컬럼은 준비됨.
+// (session_id, child_id) 당 1행 upsert. 1단계 저장으로 세션이 먼저 생성돼 있어야 함.
+// =============================================================
