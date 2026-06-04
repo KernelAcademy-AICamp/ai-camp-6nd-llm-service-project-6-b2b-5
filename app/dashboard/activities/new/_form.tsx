@@ -18,9 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   analyzePhotosAction,
-  generateChildSummariesAction,
   saveActivityRecordAction,
-  loadSavedChildPhotosAction,
   loadResumeSessionAction,
   autoClassifyByProfileAction,
   type PhotoAnalysis,
@@ -154,13 +152,15 @@ async function urlToCompressedDataUrl(url: string): Promise<string> {
 }
 
 /**
- * 활동 기록 작성 폼 (1단계 매일 활동 기록 + 2단계 원아 활동 기록)
+ * 활동 기록 작성 폼 — 1단계 "매일 활동 기록" 전용.
+ * 2단계 "원아 활동 기록"은 별도 라우트(nextStepHref, /dashboard/activity-records)에서 작성한다.
  * @param childOptions 담당 반 원아 목록
  * @param classroomName 현재 반 이름
  * @param classroomId 현재 반 id (DB 저장용)
  * @param teacherId 작성 교사 id (DB 저장용)
  * @param todayMemoHref 한줄기록(오늘 메모) 링크
- * @param initialStep 진입 시 시작 단계 (1 | 2)
+ * @param initialStep 진입 단계(레거시 URL 호환용 — 폼은 항상 1단계)
+ * @param nextStepHref 2단계(원아 활동 기록) 페이지 링크. 저장 완료 후 이동.
  */
 export function ActivityRecordForm({
   childOptions: children,
@@ -185,7 +185,8 @@ export function ActivityRecordForm({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const replacingIdRef = useRef<string | null>(null);
-  const [step, setStep] = useState<StepNumber>(initialStep);
+  // 작성 폼은 1단계(매일 활동 기록) 전용. 2단계(원아 활동 기록)는 별도 라우트(nextStepHref).
+  const [step, setStep] = useState<StepNumber>(1);
 
   // step 1 — 사진 + AI 분석
   const [images, setImages] = useState<UploadedImage[]>([]);
@@ -221,10 +222,6 @@ export function ActivityRecordForm({
   // 페이지 이탈 경고 (미저장 변경 시)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   // 재진입 이어쓰기 — 오늘 저장된 1단계가 있는데 2단계 미작성 시
-  const [resumeData, setResumeData] = useState<{
-    analysis: PhotoAnalysis;
-    photos: { id: string; url: string; childId: string }[];
-  } | null>(null);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const resumeCheckedRef = useRef(false);
   // 분류 팝업 중앙 드롭존 하이라이트
@@ -235,15 +232,6 @@ export function ActivityRecordForm({
   >({});
   const [autoClassifying, setAutoClassifying] = useState(false);
   const defaultComputedRef = useRef(false);
-  // 저장 검증 — DB에서 다시 불러온 원아별 사진(서명 URL)
-  const [savedPhotosByChild, setSavedPhotosByChild] = useState<
-    Record<string, string[]>
-  >({});
-  const [loadingSaved, setLoadingSaved] = useState(false);
-  const [savedLoaded, setSavedLoaded] = useState(false);
-
-  // step 3 — 원아별 한 줄 메모 (전체 리스트 인라인 편집)
-  const [savedMemos, setSavedMemos] = useState<Record<string, string>>({});
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
   // 공용
@@ -300,13 +288,10 @@ export function ActivityRecordForm({
     setDraftAssignments({});
     setDraftTags({});
     setSelectedChildId("");
-    setSavedMemos({});
     setDirty(false);
     setSavedOnce(false);
     setDefaultAssignments({});
     defaultComputedRef.current = false;
-    setSavedPhotosByChild({});
-    setSavedLoaded(false);
     setShowClusterModal(false);
     setShowLeaveDialog(false);
     setError(null);
@@ -338,7 +323,6 @@ export function ActivityRecordForm({
     void loadResumeSessionAction({ classroomId, date: isoToday() }).then(
       (res) => {
         if (res.ok && res.exists && !res.hasStep2) {
-          setResumeData({ analysis: res.analysis, photos: res.photos });
           setShowResumeDialog(true);
         }
       },
@@ -346,27 +330,11 @@ export function ActivityRecordForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 이어서 작성 — 저장된 1단계를 폼으로 복원하고 2단계로 진입 */
+  /** 이어서 작성 — 저장된 1단계 기반으로 2단계(원아 활동 기록) 페이지로 이동.
+   *  2단계 페이지가 오늘 세션을 DB에서 직접 불러오므로 폼 복원은 불필요. */
   function applyResume() {
-    if (!resumeData) {
-      setShowResumeDialog(false);
-      return;
-    }
-    const imgs = resumeData.photos.map((p) => ({
-      id: p.id,
-      dataUrl: p.url,
-      name: p.id,
-    }));
-    const assign: Record<string, string> = {};
-    for (const p of resumeData.photos) assign[p.id] = p.childId;
-    setImages(imgs);
-    setSelectedPhotoIds(new Set(imgs.map((i) => i.id)));
-    setPhotoAssignments(assign);
-    setAnalysis(resumeData.analysis);
-    setSavedOnce(true);
-    setDirty(false);
     setShowResumeDialog(false);
-    setStep(2);
+    if (nextStepHref) router.push(nextStepHref);
   }
 
   /** 새로 작성 — 화면 초기화(저장 시 오늘 기록 덮어씀) */
@@ -425,14 +393,6 @@ export function ActivityRecordForm({
     pendingHrefRef.current = null;
     if (href) router.push(href);
   }
-
-  // 2단계 진입 시 DB 저장된 원아별 사진을 한 번 자동 조회
-  useEffect(() => {
-    if (step === 2 && !savedLoaded && classroomId) {
-      refreshSavedPhotos();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
 
   const today = new Date();
   const dateLabel = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
@@ -761,54 +721,6 @@ export function ActivityRecordForm({
     children,
   ]);
 
-  function generateAllSummaries() {
-    if (!analysis) {
-      setError("1단계에서 AI 활동 분석이 먼저 완료되어야 해요.");
-      return;
-    }
-    if (children.length === 0) return;
-    setError(null);
-    const childPayload = children.map((c) => {
-      const photos = photosForChild(c.id);
-      const tags = Array.from(
-        new Set(
-          photos
-            .map((p) => photoActivityTags[p.id]?.trim())
-            .filter((t): t is string => !!t),
-        ),
-      );
-      return {
-        name: c.name,
-        photoCount: photos.length,
-        clusterDescription: tags.length ? tags.join(", ") : null,
-      };
-    });
-    startTransition(async () => {
-      const result = await generateChildSummariesAction({
-        classroomName,
-        activityTitle: analysis.activity_title,
-        activityDescription: analysis.activity_description,
-        keywords: analysis.keywords,
-        children: childPayload,
-      });
-      if (result.ok) {
-        setSavedMemos((prev) => {
-          const next = { ...prev };
-          children.forEach((c, i) => {
-            const s = result.summaries[i];
-            if (s) next[c.id] = s.trim();
-          });
-          return next;
-        });
-        const ok = result.summaries.filter((s) => s && s.trim()).length;
-        setSaveToast(`${ok}명 원아 한 줄 메모 일괄 생성 완료`);
-        window.setTimeout(() => setSaveToast(null), 2500);
-      } else {
-        setError(result.error);
-      }
-    });
-  }
-
   function isoToday(): string {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -873,31 +785,6 @@ export function ActivityRecordForm({
     } finally {
       setSaving(false);
     }
-  }
-
-  /** DB에 저장된 원아별 사진 다시 불러오기 (저장 검증용) */
-  function refreshSavedPhotos() {
-    if (!classroomId) return;
-    setLoadingSaved(true);
-    startTransition(async () => {
-      const res = await loadSavedChildPhotosAction({
-        classroomId,
-        date: isoToday(),
-      });
-      setLoadingSaved(false);
-      if (res.ok) {
-        setSavedPhotosByChild(res.byChild);
-        setSavedLoaded(true);
-      } else {
-        setError(`저장 사진 조회 실패: ${res.error}`);
-      }
-    });
-  }
-
-  function tryGoStep(target: StepNumber) {
-    setError(null);
-    // 저장은 별도 '저장하기' 버튼에서만 수행 (자동저장 제거)
-    setStep(target);
   }
 
   /** 분류 팝업 열기 — 첫 원아 자동 선택 */
@@ -983,22 +870,31 @@ export function ActivityRecordForm({
         </p>
       </section>
 
-      {/* 스테퍼 */}
+      {/* 스테퍼 — 1단계(현재 작성 폼) → 2단계(원아 활동 기록, 별도 페이지) */}
       <section>
         <ol className="flex items-center gap-1.5">
           {([1, 2] as StepNumber[]).map((n, idx) => {
-            const isActive = n === step;
-            const isDone =
-              (n === 1 && !!analysis) ||
-              (n === 2 && Object.keys(savedMemos).length > 0);
-            const isReachable = true;
+            const isActive = n === 1;
+            const isDone = n === 1 && !!analysis;
+            // 2단계는 저장 완료 후에만 이동 가능 (별도 라우트)
+            const isReachable = n === 1 || (savedOnce && !dirty);
+            const goStep = () => {
+              if (n === 2) {
+                if (isReachable && nextStepHref) router.push(nextStepHref);
+                return;
+              }
+            };
             return (
               <li key={n} className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => tryGoStep(n)}
+                  onClick={goStep}
                   disabled={!isReachable}
-                  title={STEP_META[n].sub}
+                  title={
+                    n === 2 && !isReachable
+                      ? "먼저 ‘저장하기’를 눌러 저장해주세요"
+                      : STEP_META[n].sub
+                  }
                   className={cn(
                     "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
                     isActive
@@ -1664,333 +1560,59 @@ export function ActivityRecordForm({
         </div>
       )}
 
-      {/* STEP 2 — 원아 활동 기록 */}
-      {step === 2 && (
-        <>
-          {/* 활동 요약 (1단계에서 가져옴) */}
-          {analysis && (
-            <section className="rounded-2xl bg-emerald-50/60 p-4 ring-1 ring-emerald-200">
-              <div className="flex items-start gap-2">
-                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-emerald-700/80">
-                    오늘의 활동
-                  </p>
-                  <p className="mt-0.5 text-sm font-bold text-slate-900">
-                    {analysis.activity_title}
-                  </p>
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    {analysis.keywords.map((k) => (
-                      <span
-                        key={k}
-                        className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700"
-                      >
-                        {k}
-                      </span>
-                    ))}
-                    <span className="ml-1 text-[11px] text-emerald-700/80">
-                      매칭 원아 {matchedChildIds.size}명
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </section>
+      {/* 하단 네비게이션 — 저장하기(좌) / 다음 단계: 원아 활동 기록(우, 별도 라우트) */}
+      <section className="flex items-center justify-end gap-2">
+        {/* 저장하기 — 분석 완료 시 활성, 변경(dirty) 있을 때만 */}
+        <button
+          type="button"
+          onClick={() => void saveToDb()}
+          disabled={!analysis || saving || (savedOnce && !dirty)}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400"
+        >
+          {saving ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              저장 중…
+            </>
+          ) : (
+            <>
+              <Check className="h-4 w-4" strokeWidth={3} />
+              저장하기
+            </>
           )}
-
-          {/* 원아별 한 줄 메모 리스트 */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-5">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-bold text-slate-900">
-                  원아별 활동 한 줄 메모
-                </p>
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  전체 원아의 활동 메모를 한 번에 검토·수정하세요. 빈 칸은 AI 일괄 생성으로 한 번에 채울 수 있어요.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={generateAllSummaries}
-                disabled={isPending || !analysis || children.length === 0}
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors",
-                  isPending || !analysis || children.length === 0
-                    ? "bg-slate-100 text-slate-400"
-                    : "bg-emerald-600 text-white hover:bg-emerald-700",
-                )}
-              >
-                {isPending ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    일괄 생성 중…
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-3.5 w-3.5" />
-                    전체 AI 일괄 생성
-                  </>
-                )}
-              </button>
-            </div>
-
-            <p className="mb-3 text-[11px] text-slate-500">
-              작성 완료{" "}
-              <strong className="text-slate-900">
-                {
-                  Object.values(savedMemos).filter((v) => v.trim().length > 0)
-                    .length
-                }
-              </strong>{" "}
-              / 전체 {children.length}
-            </p>
-
-            {children.length === 0 ? (
-              <p className="rounded-xl bg-slate-50 py-8 text-center text-sm text-slate-500">
-                등록된 원아가 없어요.
-              </p>
-            ) : (
-              <ul className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-100">
-                {children.map((c) => {
-                  const photos = photosForChild(c.id);
-                  const value = savedMemos[c.id] ?? "";
-                  const filled = value.trim().length > 0;
-                  return (
-                    <li key={c.id} className="flex gap-3 bg-white px-3 py-3">
-                      <div className="flex w-16 shrink-0 flex-col items-center gap-1">
-                        <div
-                          className={cn(
-                            "grid h-9 w-9 place-items-center rounded-full text-xs font-bold",
-                            c.gender === "F"
-                              ? "bg-rose-100 text-rose-600"
-                              : "bg-emerald-100 text-emerald-700",
-                          )}
-                        >
-                          {c.name.charAt(0)}
-                        </div>
-                        <p className="truncate text-[11px] font-semibold text-slate-800">
-                          {c.name}
-                        </p>
-                        {c.privacy_agreed_at === null && (
-                          <span
-                            className="rounded-sm bg-rose-100 px-1 py-px text-[9px] font-medium text-rose-700"
-                            title="개인정보 미동의 — 사진·기록 외부 공유 시 주의"
-                          >
-                            미동의
-                          </span>
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        {photos.length > 0 && (
-                          <div className="mb-1.5 flex flex-wrap gap-1">
-                            {photos.slice(0, 6).map((p) => (
-                              <div
-                                key={p.id}
-                                className="h-9 w-9 overflow-hidden rounded ring-1 ring-slate-200"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={p.dataUrl}
-                                  alt=""
-                                  className="h-full w-full object-cover"
-                                />
-                              </div>
-                            ))}
-                            {photos.length > 6 && (
-                              <span className="grid h-9 place-items-center rounded bg-slate-100 px-2 text-[10px] font-medium text-slate-500">
-                                +{photos.length - 6}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        <textarea
-                          value={value}
-                          onChange={(e) =>
-                            setSavedMemos((prev) => ({
-                              ...prev,
-                              [c.id]: e.target.value,
-                            }))
-                          }
-                          rows={2}
-                          placeholder={
-                            photos.length > 0
-                              ? `${c.name} 한 줄 메모…`
-                              : "수동으로 한 줄 메모 작성"
-                          }
-                          className="w-full resize-none rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs leading-relaxed text-slate-800 focus:border-emerald-400 focus:outline-none"
-                        />
-                      </div>
-                      <div className="flex w-5 shrink-0 items-start pt-1">
-                        {filled && (
-                          <Check
-                            className="h-4 w-4 text-emerald-600"
-                            strokeWidth={3}
-                          />
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
-          {/* DB 저장 확인 — 원아별로 저장된 사진 다시 불러오기 */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-5">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-bold text-slate-900">
-                  DB 저장 확인
-                </p>
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  오늘 이 반에 저장된 원아별 사진을 DB에서 다시 불러옵니다. (저장이 실제로 됐는지 검증)
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={refreshSavedPhotos}
-                disabled={loadingSaved || !classroomId}
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors",
-                  loadingSaved || !classroomId
-                    ? "bg-slate-100 text-slate-400"
-                    : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50",
-                )}
-              >
-                {loadingSaved ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    불러오는 중…
-                  </>
-                ) : (
-                  <>
-                    <RotateCw className="h-3.5 w-3.5" />
-                    새로고침
-                  </>
-                )}
-              </button>
-            </div>
-
-            {!savedLoaded ? (
-              <p className="rounded-xl bg-slate-50 py-8 text-center text-xs text-slate-400">
-                아직 불러오지 않았어요. 새로고침을 눌러주세요.
-              </p>
-            ) : Object.keys(savedPhotosByChild).length === 0 ? (
-              <p className="rounded-xl bg-slate-50 py-8 text-center text-xs text-slate-400">
-                저장된 원아별 사진이 없어요. 1단계에서 사진을 분류·배정한 뒤 “다음 단계”로 저장해 주세요.
-              </p>
-            ) : (
-              <ul className="space-y-3">
-                {children
-                  .filter((c) => (savedPhotosByChild[c.id]?.length ?? 0) > 0)
-                  .map((c) => {
-                    const urls = savedPhotosByChild[c.id] ?? [];
-                    return (
-                      <li key={c.id} className="flex gap-3">
-                        <div className="w-16 shrink-0">
-                          <p className="truncate text-[11px] font-semibold text-slate-800">
-                            {c.name}
-                          </p>
-                          <p className="text-[10px] text-slate-400">
-                            {urls.length}장
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {urls.map((url, i) => (
-                            <div
-                              key={`${c.id}-${i}`}
-                              className="h-12 w-12 overflow-hidden rounded ring-1 ring-emerald-200"
-                            >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={url}
-                                alt={`${c.name} 저장 사진 ${i + 1}`}
-                                className="h-full w-full object-cover"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </li>
-                    );
-                  })}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
-
-      {/* 단계 네비게이션 */}
-      <section className="flex items-center justify-between gap-2">
-        {step > 1 ? (
-          <button
-            type="button"
-            onClick={() => tryGoStep((step - 1) as StepNumber)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 transition-colors hover:bg-slate-50"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            이전 단계
-          </button>
-        ) : (
-          <span />
-        )}
-        {step < 2 ? (
-          <div className="flex items-center gap-2">
-            {/* 저장하기 — 분석 완료 시 활성, 변경(dirty) 있을 때만 */}
-            <button
-              type="button"
-              onClick={() => void saveToDb()}
-              disabled={!analysis || saving || (savedOnce && !dirty)}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400"
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  저장 중…
-                </>
-              ) : (
-                <>
-                  <Check className="h-4 w-4" strokeWidth={3} />
-                  저장하기
-                </>
-              )}
-            </button>
-            {/* 다음 단계 — 저장 완료(변경 없음) 후에만 활성. nextStepHref 있으면 별도 라우트로 이동 */}
-            <button
-              type="button"
-              onClick={() => {
-                if (nextStepHref) {
-                  router.push(nextStepHref);
-                  return;
-                }
-                tryGoStep((step + 1) as StepNumber);
-              }}
-              disabled={!savedOnce || dirty || saving}
-              title={
-                !savedOnce || dirty
-                  ? "먼저 ‘저장하기’를 눌러 저장해주세요"
-                  : undefined
-              }
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
-            >
-              다음 단계 — {STEP_META[(step + 1) as StepNumber].label}
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <span className="text-xs text-slate-400">마지막 단계</span>
-        )}
+        </button>
+        {/* 다음 단계 — 저장 완료(변경 없음) 후 2단계(원아 활동 기록) 페이지로 이동 */}
+        <button
+          type="button"
+          onClick={() => {
+            if (nextStepHref) router.push(nextStepHref);
+          }}
+          disabled={!savedOnce || dirty || saving || !nextStepHref}
+          title={
+            !savedOnce || dirty
+              ? "먼저 ‘저장하기’를 눌러 저장해주세요"
+              : undefined
+          }
+          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
+        >
+          다음 단계 — {STEP_META[2].label}
+          <ArrowRight className="h-4 w-4" />
+        </button>
       </section>
 
       {/* 하단 안내 */}
       <section className="text-xs text-slate-500">
         <p>
-          저장된 원아별 메모는{" "}
+          저장한 매일 활동 기록은 이어서{" "}
+          <span className="font-medium text-slate-700">원아 활동 기록</span>{" "}
+          작성과{" "}
           <Link
             href={todayMemoHref}
             className="font-medium text-emerald-600 underline"
           >
             한줄기록
           </Link>
-          과 알림장·관찰일지 작성에 자동으로 활용돼요.
+          ·알림장·관찰일지에 자동으로 활용돼요.
         </p>
       </section>
 
