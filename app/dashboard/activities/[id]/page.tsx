@@ -47,7 +47,8 @@ export default async function ActivityDetailPage({
   params2.set("role", role);
   if (searchParams?.user) params2.set("user", searchParams.user);
   const qs = `?${params2.toString()}`;
-  const backHref = `/dashboard/activities${qs}`;
+  // 원아별 상세에서 돌아갈 땐 목록의 '원아별' 탭으로 복귀
+  const backHref = `/dashboard/activities${qs}${childId ? "&tab=child" : ""}`;
 
   // 최종본 양식은 교사/원장/관리자만 열람
   if (role === "parent") {

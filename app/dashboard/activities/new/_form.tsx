@@ -910,11 +910,12 @@ export function ActivityRecordForm({
   return (
     <div className="space-y-6">
       {/* 헤더 (뒤로가기 버튼 제거 — 이탈 경고는 메뉴 이동/새로고침 시 유지) */}
+      {/* 폰트 크기는 '활동 기록 목록' 페이지와 동일하게 맞춤 */}
       <section>
-        <h1 className="text-xl font-bold tracking-tight text-slate-900">
-          매일 활동 기록 · {step}단계 — {STEP_META[step].label}
+        <h1 className="text-3xl font-bold tracking-tight">
+          활동 기록 작성 · {step}단계 — {STEP_META[step].label}
         </h1>
-        <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+        <p className="mt-1 flex items-center gap-1.5 text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
           {dateLabel} · {classroomName} · {STEP_META[step].sub}
         </p>

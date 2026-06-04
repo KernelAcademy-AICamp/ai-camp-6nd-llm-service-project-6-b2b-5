@@ -66,14 +66,16 @@ export function ActivityListClient({
   classrooms,
   writeHref,
   qs,
+  initialTab = "all",
 }: {
   sessions: SessionRow[];
   childRecords: ChildRecordRow[];
   classrooms: { id: string; name: string }[];
   writeHref: string;
   qs: string; // "?role=...&user=..."
+  initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>("all");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [period, setPeriod] = useState<Period>("all");
   const [classroomId, setClassroomId] = useState<string>("all");
   const [keyword, setKeyword] = useState<string>("all");

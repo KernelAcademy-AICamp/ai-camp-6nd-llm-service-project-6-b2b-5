@@ -38,10 +38,11 @@ function parseKeywords(content: string | null): string[] {
 export default async function ActivityListPage({
   searchParams,
 }: {
-  searchParams: { role?: string; user?: string };
+  searchParams: { role?: string; user?: string; tab?: string };
 }) {
   const teacherId = searchParams?.user ?? DEFAULT_TEACHER_ID;
   const role = searchParams?.role ?? "teacher";
+  const initialTab = searchParams?.tab === "child" ? "child" : "all";
   const classrooms = await loadMyClassrooms(teacherId);
   const classroomIds = classrooms.map((c) => c.id);
   const classroomName = new Map(classrooms.map((c) => [c.id, c.name]));
@@ -147,6 +148,7 @@ export default async function ActivityListPage({
         classrooms={classrooms.map((c) => ({ id: c.id, name: c.name }))}
         writeHref={`/dashboard/activities/new${qs}`}
         qs={qs}
+        initialTab={initialTab}
       />
     </main>
   );
