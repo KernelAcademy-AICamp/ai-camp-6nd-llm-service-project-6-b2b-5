@@ -167,7 +167,7 @@ export async function generateAreaObservationAction(args: {
     });
     if (!ctx) return { ok: false, error: "원아 정보를 찾을 수 없어요." };
 
-    const ctxPrompt = contextToPromptText(ctx);
+    const ctxPrompt = contextToPromptText(ctx, { includeTemperament: true });
     const register = args.register ?? "anecdote";
     const modeLine =
       register === "anecdote" ? "작성 모드: 일화기록" : "작성 모드: 발달평가";

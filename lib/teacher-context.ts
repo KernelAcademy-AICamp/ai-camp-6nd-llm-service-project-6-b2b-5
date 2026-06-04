@@ -63,6 +63,13 @@ export type ChildContextPayload = {
   activities: string[]; // selected filter
   keywords: string[];
   memos: Array<{ date: string; text: string; sessionTitle: string | null }>;
+  // 활동 분석 — ai_content(원아별 1순위) → session_ai_content(세션 단위 2순위)
+  analyses: Array<{
+    date: string;
+    text: string;
+    sessionTitle: string | null;
+    source: "ai_content" | "session_ai_content";
+  }>;
   sessionTitles: string[]; // sessions found in period
   temperament: Temperament | null; // 원아 기질 5칼럼 (이름 매핑)
   sensitivity: Sensitivity | null; // 기질 예민도 상/중/하
@@ -113,23 +120,39 @@ export async function loadChildContext(args: {
           .map((s) => s.id)
       : sessionIds;
 
-  // 해당 원아의 메모
+  // 해당 원아의 활동 기록 — memo + ai_content + session_ai_content
   const { data: records } = sessionIdsFiltered.length
     ? await supabase
         .from("activity_records")
-        .select("memo, created_at, session_id")
+        .select("memo, ai_content, session_ai_content, created_at, session_id")
         .eq("child_id", args.childId)
         .in("session_id", sessionIdsFiltered)
-        .not("memo", "is", null)
         .order("created_at", { ascending: true })
-    : { data: [] as Array<{ memo: string | null; created_at: string; session_id: string }> };
+    : {
+        data: [] as Array<{
+          memo: string | null;
+          ai_content: string | null;
+          session_ai_content: string | null;
+          created_at: string;
+          session_id: string;
+        }>,
+      };
 
   const sessionMetaById = new Map(
     (sessions ?? []).map((s) => [s.id, s]),
   );
 
-  const memos = (records ?? [])
-    .filter((r): r is { memo: string; created_at: string; session_id: string } => !!r.memo)
+  const allRecords = (records ?? []) as Array<{
+    memo: string | null;
+    ai_content: string | null;
+    session_ai_content: string | null;
+    created_at: string;
+    session_id: string;
+  }>;
+
+  // 한 줄 메모 (기존)
+  const memos = allRecords
+    .filter((r): r is typeof r & { memo: string } => !!r.memo)
     .map((r) => {
       const s = sessionMetaById.get(r.session_id);
       return {
@@ -138,6 +161,25 @@ export async function loadChildContext(args: {
         sessionTitle: s?.title ?? null,
       };
     });
+
+  // 활동 분석 — ai_content(1순위) → session_ai_content(2순위)
+  const analyses: Array<{
+    date: string;
+    text: string;
+    sessionTitle: string | null;
+    source: "ai_content" | "session_ai_content";
+  }> = [];
+  for (const r of allRecords) {
+    const text = r.ai_content?.trim() || r.session_ai_content?.trim();
+    if (!text) continue;
+    const s = sessionMetaById.get(r.session_id);
+    analyses.push({
+      date: s?.date ?? r.created_at.slice(0, 10),
+      text,
+      sessionTitle: s?.title ?? null,
+      source: r.ai_content?.trim() ? "ai_content" : "session_ai_content",
+    });
+  }
 
   const sessionTitles = Array.from(
     new Set(
@@ -157,6 +199,7 @@ export async function loadChildContext(args: {
     activities: args.activities,
     keywords: args.keywords,
     memos,
+    analyses,
     sessionTitles,
     temperament: temperamentInfo?.temperament ?? null,
     sensitivity: temperamentInfo?.sensitivity ?? null,
@@ -194,6 +237,28 @@ export function contextToPromptText(
         .join("\n"),
     );
   }
+  // 활동 분석 — ai_content(원아별, 1순위) → session_ai_content(세션 단위, 2순위)
+  // 1순위가 있으면 그것만 사용, 없을 때만 2순위 사용
+  const perChildAnalyses = ctx.analyses.filter((a) => a.source === "ai_content");
+  const sessionAnalyses = ctx.analyses.filter(
+    (a) => a.source === "session_ai_content",
+  );
+  const activeAnalyses =
+    perChildAnalyses.length > 0 ? perChildAnalyses : sessionAnalyses;
+
+  if (activeAnalyses.length > 0) {
+    const label =
+      perChildAnalyses.length > 0
+        ? `\n[기간 내 활동 분석 ${activeAnalyses.length}건 — 원아별 AI 기록]`
+        : `\n[기간 내 활동 분석 ${activeAnalyses.length}건 — 세션 단위 AI 기록]`;
+    parts.push(label);
+    for (const a of activeAnalyses) {
+      parts.push(
+        `- ${a.date}${a.sessionTitle ? ` (${a.sessionTitle})` : ""}:\n${a.text}`,
+      );
+    }
+  }
+
   if (ctx.memos.length > 0) {
     parts.push(`\n[기간 내 한 줄 메모 ${ctx.memos.length}건]`);
     for (const m of ctx.memos) {
@@ -201,9 +266,9 @@ export function contextToPromptText(
         `- ${m.date}${m.sessionTitle ? ` (${m.sessionTitle})` : ""}: ${m.text}`,
       );
     }
-  } else {
+  } else if (activeAnalyses.length === 0) {
     parts.push(
-      `\n[기간 내 한 줄 메모가 없음 — 일반적인 알림장 톤으로 초안 생성하되, "구체적인 사례를 추후 보강해 주세요"라는 안내를 자연스럽게 녹이세요.]`,
+      `\n[기간 내 한 줄 메모·활동 분석이 없음 — 일반적인 톤으로 초안 생성하되, "구체적인 사례를 추후 보강해 주세요"라는 안내를 자연스럽게 녹이세요.]`,
     );
   }
   return parts.join("\n");

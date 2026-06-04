@@ -5,7 +5,12 @@ import {
   resolveActiveClassroom,
 } from "@/lib/teacher-context";
 import { ClassroomSwitcher } from "@/components/teacher/classroom-switcher";
-import { NoteForm, type ChildOption, type ActivityOption } from "./_form";
+import {
+  NoteForm,
+  type ChildOption,
+  type ActivityOption,
+  type InitialDraft,
+} from "./_form";
 
 export const dynamic = "force-dynamic";
 
@@ -33,10 +38,30 @@ async function loadRecentActivities(classroomId: string): Promise<ActivityOption
     .map((s) => ({ id: s.id, date: s.date, title: s.title }));
 }
 
+async function loadDraft(
+  draftId: string,
+  classroomId: string,
+): Promise<InitialDraft | null> {
+  const supabase = createAdminClient();
+  const { data } = await supabase
+    .from("daily_notes")
+    .select("id, child_id, date, content, status")
+    .eq("id", draftId)
+    .eq("classroom_id", classroomId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    id: data.id,
+    childId: data.child_id,
+    endDate: data.date,
+    content: data.content ?? "",
+  };
+}
+
 export default async function NewNotePage({
   searchParams,
 }: {
-  searchParams: { role?: string; user?: string; classroom?: string };
+  searchParams: { role?: string; user?: string; classroom?: string; draft?: string };
 }) {
   const teacherId = searchParams?.user ?? DEFAULT_TEACHER_ID;
   const classrooms = await loadMyClassrooms(teacherId);
@@ -44,6 +69,11 @@ export default async function NewNotePage({
   const [children, activities] = active
     ? await Promise.all([loadChildren(active.id), loadRecentActivities(active.id)])
     : [[] as ChildOption[], [] as ActivityOption[]];
+
+  const initialDraft =
+    active && searchParams?.draft
+      ? await loadDraft(searchParams.draft, active.id)
+      : null;
 
   const params = new URLSearchParams();
   params.set("role", searchParams?.role ?? "teacher");
@@ -62,6 +92,7 @@ export default async function NewNotePage({
         teacherId={teacherId}
         classroomId={active?.id ?? ""}
         activities={activities}
+        initialDraft={initialDraft}
       />
     </main>
   );

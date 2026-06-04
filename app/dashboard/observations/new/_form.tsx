@@ -95,7 +95,7 @@ export function ObservationForm({
   const [startDate, setStartDate] = useState(isoMinusDays(13));
   const [endDate, setEndDate] = useState(todayISO());
   const [kind, setKind] = useState<KindOption | null>(null);
-  const [areas, setAreas] = useState<AreaKey[]>([]);
+  const [areas, setAreas] = useState<AreaKey[]>([...AREA_KEYS]);
   const [selectedActivities, setSelectedActivities] = useState<string[]>([]);
 
   const periodActivities = useMemo(() => {
@@ -233,121 +233,115 @@ export function ObservationForm({
         </div>
       )}
 
-      {/* 본문: 메인 세로 + 우 추가하기 */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="space-y-4">
-        {/* ① 상단 필터 (가로 그리드) */}
-        <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
-              <select
-                value={childId}
-                onChange={(e) => setChildId(e.target.value)}
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:border-emerald-400 focus:outline-none"
-              >
-                {children.length === 0 ? (
-                  <option value="">반에 원아가 없어요</option>
-                ) : (
-                  children.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
-
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-slate-600">기간 선택</p>
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1">
-                <input
-                  type="date"
-                  value={startDate}
-                  max={endDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs focus:border-emerald-400 focus:outline-none"
-                />
-                <span className="text-xs text-slate-400">~</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  min={startDate}
-                  max={todayISO()}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="h-10 rounded-lg border border-slate-200 bg-white px-2 text-xs focus:border-emerald-400 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            <ActivityDropdown
-              activities={periodActivities}
-              selected={selectedActivities}
-              onChange={setSelectedActivities}
-            />
+      {/* 본문: 좌 필터 / 중 초안 / 우 추가하기 (3칼럼) */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)_220px]">
+        {/* ① 좌측 필터 */}
+        <section className="flex flex-col space-y-5 self-start rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
+            <select
+              value={childId}
+              onChange={(e) => setChildId(e.target.value)}
+              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:border-emerald-400 focus:outline-none"
+            >
+              {children.length === 0 ? (
+                <option value="">반에 원아가 없어요</option>
+              ) : (
+                children.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))
+              )}
+            </select>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
-            <div>
-              <div className="mb-1.5 flex items-center gap-2">
-                <p className="text-xs font-medium text-slate-600">누리과정 영역</p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAreas((prev) =>
-                      prev.length === AREA_KEYS.length ? [] : [...AREA_KEYS],
-                    )
-                  }
-                  className="text-[11px] font-medium text-emerald-700 hover:underline"
-                >
-                  {areas.length === AREA_KEYS.length ? "전체 해제" : "전체 선택"}
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {AREA_KEYS.map((k) => {
-                  const active = areas.includes(k);
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => toggleArea(k)}
-                      className={cn(
-                        "h-8 rounded-full border px-3 text-xs font-medium transition-colors",
-                        active
-                          ? "border-emerald-500 bg-emerald-500 text-white"
-                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                      )}
-                    >
-                      {AREA_LABELS[k]}
-                    </button>
-                  );
-                })}
-              </div>
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-slate-600">기간 선택</p>
+            <div className="space-y-1">
+              <input
+                type="date"
+                value={startDate}
+                max={endDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs focus:border-emerald-400 focus:outline-none"
+              />
+              <input
+                type="date"
+                value={endDate}
+                min={startDate}
+                max={todayISO()}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs focus:border-emerald-400 focus:outline-none"
+              />
             </div>
+          </div>
 
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-slate-600">구분 (선택)</p>
-              <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 bg-white">
-                {KIND_OPTIONS.map((k, i) => {
-                  const active = kind === k;
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => setKind(active ? null : k)}
-                      className={cn(
-                        "h-8 px-5 text-xs font-medium transition-colors",
-                        i > 0 && "border-l border-slate-200",
-                        active
-                          ? "bg-emerald-500 text-white"
-                          : "text-slate-600 hover:bg-slate-50",
-                      )}
-                    >
-                      {k}
-                    </button>
-                  );
-                })}
-              </div>
+          <ActivityDropdown
+            activities={periodActivities}
+            selected={selectedActivities}
+            onChange={setSelectedActivities}
+          />
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <p className="text-xs font-medium text-slate-600">누리과정 영역</p>
+              <button
+                type="button"
+                onClick={() =>
+                  setAreas((prev) =>
+                    prev.length === AREA_KEYS.length ? [] : [...AREA_KEYS],
+                  )
+                }
+                className="text-[11px] font-medium text-emerald-700 hover:underline"
+              >
+                {areas.length === AREA_KEYS.length ? "전체 해제" : "전체 선택"}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {AREA_KEYS.map((k) => {
+                const active = areas.includes(k);
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => toggleArea(k)}
+                    className={cn(
+                      "h-7 rounded-full border px-2.5 text-[11px] font-medium transition-colors",
+                      active
+                        ? "border-emerald-500 bg-emerald-500 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                    )}
+                  >
+                    {AREA_LABELS[k]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-slate-600">구분 (선택)</p>
+            <div className="grid auto-cols-fr grid-flow-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+              {KIND_OPTIONS.map((k, i) => {
+                const active = kind === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setKind(active ? null : k)}
+                    className={cn(
+                      "h-8 text-xs font-medium transition-colors",
+                      i > 0 && "border-l border-slate-200",
+                      active
+                        ? "bg-emerald-500 text-white"
+                        : "text-slate-600 hover:bg-slate-50",
+                    )}
+                  >
+                    {k}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -356,7 +350,7 @@ export function ObservationForm({
             onClick={generate}
             disabled={genPending || !childId}
             className={cn(
-              "flex h-11 w-full items-center justify-center gap-1.5 rounded-xl text-sm font-semibold transition-colors",
+              "!mt-[80px] flex h-11 w-full items-center justify-center gap-1.5 rounded-xl text-sm font-semibold transition-colors",
               genPending || !childId
                 ? "bg-emerald-300 text-white"
                 : "bg-emerald-600 text-white hover:bg-emerald-700",
@@ -512,7 +506,6 @@ export function ObservationForm({
             </>
           )}
         </section>
-        </div>
 
         {/* ③ 우측 추가하기 */}
         <PullPanel

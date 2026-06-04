@@ -29,6 +29,12 @@ import {
 
 export type ChildOption = { id: string; name: string };
 export type ActivityOption = { id: string; date: string; title: string };
+export type InitialDraft = {
+  id: string;
+  childId: string;
+  endDate: string;
+  content: string;
+};
 export type PullItem = {
   id: string;
   kind: "note" | "memo";
@@ -58,24 +64,79 @@ function todayISO() {
 
 type Step = 1 | 2 | 3 | 4;
 
+function parseSavedContent(raw: string): {
+  body: string;
+  life: Record<string, string>;
+  detail: Record<string, string[]>;
+  tempAm: string;
+  tempPm: string;
+} {
+  const lifeIdx = raw.indexOf("\n\n[생활기록]");
+  const detailIdx = raw.indexOf("\n\n[상세입력]");
+  const cutAt = [lifeIdx, detailIdx].filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  const body = cutAt !== undefined ? raw.slice(0, cutAt).trim() : raw.trim();
+
+  function blockLines(label: string): string[] {
+    const idx = raw.indexOf(`[${label}]`);
+    if (idx < 0) return [];
+    const after = raw.slice(idx + label.length + 2);
+    const end = after.search(/\n\[[^\]]+\]/);
+    const block = end >= 0 ? after.slice(0, end) : after;
+    return block.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("•"));
+  }
+
+  const life: Record<string, string> = {};
+  for (const line of blockLines("생활기록")) {
+    const m = line.match(/^•\s*([^:]+):\s*(.+)$/);
+    if (m) life[m[1].trim()] = m[2].trim();
+  }
+
+  const detail: Record<string, string[]> = {};
+  let tempAm = "";
+  let tempPm = "";
+  for (const line of blockLines("상세입력")) {
+    const m = line.match(/^•\s*([^:]+):\s*(.+)$/);
+    if (!m) continue;
+    const key = m[1].trim();
+    const value = m[2].trim();
+    if (key === "체온체크") {
+      const am = value.match(/오전\s*([\d.]+)/);
+      const pm = value.match(/오후\s*([\d.]+)/);
+      if (am) tempAm = am[1];
+      if (pm) tempPm = pm[1];
+    } else {
+      detail[key] = value.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return { body, life, detail, tempAm, tempPm };
+}
+
 export function NoteForm({
   childOptions: children,
   qs,
   teacherId,
   classroomId,
   activities,
+  initialDraft,
 }: {
   childOptions: ChildOption[];
   qs: string;
   teacherId: string;
   classroomId: string;
   activities: ActivityOption[];
+  initialDraft?: InitialDraft | null;
 }) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>(1);
-  const [childId, setChildId] = useState<string>(children[0]?.id ?? "");
+  const parsedInitial = useMemo(
+    () => (initialDraft ? parseSavedContent(initialDraft.content) : null),
+    [initialDraft],
+  );
+  const [step, setStep] = useState<Step>(initialDraft ? 3 : 1);
+  const [childId, setChildId] = useState<string>(
+    initialDraft?.childId ?? children[0]?.id ?? "",
+  );
   const [startDate, setStartDate] = useState(isoMinusDays(13));
-  const [endDate, setEndDate] = useState(todayISO());
+  const [endDate, setEndDate] = useState(initialDraft?.endDate ?? todayISO());
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [selectedActivities, setSelectedActivities] = useState<string[]>([]);
 
@@ -83,7 +144,7 @@ export function NoteForm({
     () => activities.filter((a) => a.date >= startDate && a.date <= endDate),
     [activities, startDate, endDate],
   );
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(parsedInitial?.body ?? "");
   // 문단별 근거 라벨 (인라인 배지). draft 문단 순서와 1:1 대응, 없으면 null
   const [paragraphSources, setParagraphSources] = useState<(string | null)[]>([]);
   const [sources, setSources] = useState<SourceMemo[]>([]);
@@ -94,20 +155,20 @@ export function NoteForm({
   const [refining, setRefining] = useState<RefineMode | null>(null);
 
   // 생활기록 (선택사항 — 입력한 항목만 본문 끝에 요약으로 덧붙여 저장)
-  const [lifeMood, setLifeMood] = useState<string | null>(null);
-  const [lifeHealth, setLifeHealth] = useState<string | null>(null);
-  const [lifeTemp, setLifeTemp] = useState<string | null>(null);
-  const [lifeMeal, setLifeMeal] = useState<string | null>(null);
-  const [lifeSleep, setLifeSleep] = useState<string | null>(null);
-  const [lifeBowel, setLifeBowel] = useState<string | null>(null);
+  const [lifeMood, setLifeMood] = useState<string | null>(parsedInitial?.life["기분"] ?? null);
+  const [lifeHealth, setLifeHealth] = useState<string | null>(parsedInitial?.life["건강"] ?? null);
+  const [lifeTemp, setLifeTemp] = useState<string | null>(parsedInitial?.life["체온체크"] ?? null);
+  const [lifeMeal, setLifeMeal] = useState<string | null>(parsedInitial?.life["식사여부"] ?? null);
+  const [lifeSleep, setLifeSleep] = useState<string | null>(parsedInitial?.life["수면시간"] ?? null);
+  const [lifeBowel, setLifeBowel] = useState<string | null>(parsedInitial?.life["배변상태"] ?? null);
 
   // 상세입력 (자유 텍스트 항목 + 체온)
-  const [detailSnack, setDetailSnack] = useState<string[]>([]);
-  const [detailFeed, setDetailFeed] = useState<string[]>([]);
-  const [detailSleep, setDetailSleep] = useState<string[]>([]);
-  const [detailBowel, setDetailBowel] = useState<string[]>([]);
-  const [tempAm, setTempAm] = useState("");
-  const [tempPm, setTempPm] = useState("");
+  const [detailSnack, setDetailSnack] = useState<string[]>(parsedInitial?.detail["이유식/간식"] ?? []);
+  const [detailFeed, setDetailFeed] = useState<string[]>(parsedInitial?.detail["수유여부"] ?? []);
+  const [detailSleep, setDetailSleep] = useState<string[]>(parsedInitial?.detail["수면시간"] ?? []);
+  const [detailBowel, setDetailBowel] = useState<string[]>(parsedInitial?.detail["배변상태"] ?? []);
+  const [tempAm, setTempAm] = useState(parsedInitial?.tempAm ?? "");
+  const [tempPm, setTempPm] = useState(parsedInitial?.tempPm ?? "");
 
   const childName = children.find((c) => c.id === childId)?.name ?? "";
 
@@ -228,6 +289,7 @@ export function NoteForm({
         endDate,
         content: contentWithLife,
         status,
+        draftId: initialDraft?.id ?? null,
       });
       if (result.ok) {
         setStep(4);
@@ -274,7 +336,7 @@ export function NoteForm({
 
       <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4">
         {/* 좌측 필터 */}
-        <section className="flex flex-col space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="flex flex-col space-y-5 self-start rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {/* 아이 선택 */}
           <div>
             <p className="mb-1.5 text-xs font-medium text-slate-600">아이 선택</p>
@@ -493,7 +555,7 @@ export function NoteForm({
                 {showSources &&
                   (sources.length === 0 ? (
                     <p className="mt-2 text-[11px] text-slate-400">
-                      기간 내 한 줄 메모가 없어요.
+                      기간 내 활동 기록·메모가 없어요.
                     </p>
                   ) : (
                     <ul className="mt-2 space-y-1.5 text-xs">
@@ -518,7 +580,7 @@ export function NoteForm({
                     <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
                       근거 배지
                     </span>
-                    는 해당 내용의 출처 기록입니다. 현재는 예시(가안)이며, 메모가 연동되면 실제 기록으로 표시됩니다.
+                    는 해당 내용의 출처 기록입니다. 활동 기록·메모가 있으면 실제 기록으로, 없으면 예시(가안)로 표시됩니다.
                   </p>
                 )}
               </div>

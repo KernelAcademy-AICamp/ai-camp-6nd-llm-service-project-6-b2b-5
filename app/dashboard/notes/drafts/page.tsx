@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { FileText, MessageSquare } from "lucide-react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
@@ -28,6 +29,19 @@ async function loadData(classroomId: string) {
     drafts: drafts ?? [],
     childNameById: new Map((childrenRows ?? []).map((c) => [c.id, c.name])),
   };
+}
+
+function buildEditQs(
+  searchParams: { role?: string; user?: string; classroom?: string },
+  active: { id: string } | null,
+  draftId: string,
+): string {
+  const p = new URLSearchParams();
+  p.set("role", searchParams?.role ?? "teacher");
+  if (searchParams?.user) p.set("user", searchParams.user);
+  if (active) p.set("classroom", active.id);
+  p.set("draft", draftId);
+  return `/dashboard/notes/new?${p.toString()}`;
 }
 
 export default async function DraftsPage({
@@ -76,9 +90,12 @@ export default async function DraftsPage({
                     {d.content || "(내용 없음)"}
                   </p>
                 </div>
-                <button className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">
+                <Link
+                  href={buildEditQs(searchParams, active, d.id)}
+                  className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                >
                   이어 쓰기
-                </button>
+                </Link>
               </li>
             ))}
           </ul>

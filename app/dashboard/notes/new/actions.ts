@@ -99,7 +99,7 @@ export async function generateNoteDraftAction(args: {
     const ctx = await loadChildContext(args);
     if (!ctx) return { ok: false, error: "원아 정보를 찾을 수 없어요." };
 
-    const userPrompt = contextToPromptText(ctx);
+    const userPrompt = contextToPromptText(ctx, { includeTemperament: true });
     const client = getAnthropic();
 
     const stream = client.messages.stream({
@@ -118,11 +118,31 @@ export async function generateNoteDraftAction(args: {
       .join("")
       .trim();
 
-    const sources: SourceMemo[] = ctx.memos.map((m) => ({
+    // 근거 기록 = 한 줄 메모 + 활동 기록 AI 분석
+    const memoSources: SourceMemo[] = ctx.memos.map((m) => ({
       date: m.date,
       text: m.text,
       tag: m.sessionTitle,
     }));
+
+    // 활동 분석 — ai_content(원아별 1순위) → session_ai_content(세션 2순위)
+    const perChildAnalyses = ctx.analyses.filter(
+      (a) => a.source === "ai_content",
+    );
+    const sessionAnalyses = ctx.analyses.filter(
+      (a) => a.source === "session_ai_content",
+    );
+    const activeAnalyses =
+      perChildAnalyses.length > 0 ? perChildAnalyses : sessionAnalyses;
+    const analysisSources: SourceMemo[] = activeAnalyses.map((a) => ({
+      date: a.date,
+      text: a.text.length > 80 ? `${a.text.slice(0, 80)}…` : a.text,
+      tag: a.sessionTitle ?? "활동분석",
+    }));
+
+    const sources: SourceMemo[] = [...memoSources, ...analysisSources].sort(
+      (x, y) => x.date.localeCompare(y.date),
+    );
 
     return { ok: true, draft, sources };
   } catch (e) {
@@ -212,6 +232,7 @@ export async function saveNoteAction(args: {
   endDate: string;
   content: string;
   status: "draft" | "published";
+  draftId?: string | null; // 임시저장 이어 쓰기 — 있으면 UPDATE, 없으면 INSERT
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   try {
     if (args.content.trim().length === 0) {
@@ -222,6 +243,28 @@ export async function saveNoteAction(args: {
     }
 
     const supabase = createAdminClient();
+
+    // draftId 가 있으면 기존 임시저장 행을 UPDATE
+    if (args.draftId) {
+      const { data, error } = await supabase
+        .from("daily_notes")
+        .update({
+          child_id: args.childId,
+          classroom_id: args.classroomId,
+          author_id: args.teacherId,
+          date: args.endDate,
+          content: args.content,
+          status: args.status,
+        })
+        .eq("id", args.draftId)
+        .select("id")
+        .single();
+      if (error) return { ok: false, error: error.message };
+      revalidatePath("/dashboard/notes");
+      revalidatePath("/dashboard/notes/drafts");
+      return { ok: true, id: data.id };
+    }
+
     const { data, error } = await supabase
       .from("daily_notes")
       .insert({

@@ -1,6 +1,31 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { getAnthropic, MODEL } from "@/lib/anthropic";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+// Haiku는 코드블록이나 산문 prefix를 붙여 응답할 때가 있어 JSON만 추려낸다.
+function extractJson(text: string): string {
+  const t = text.trim();
+  // 1) ```json ... ``` 코드블록
+  const fence = t.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  if (fence) return fence[1].trim();
+  // 2) 첫 { 부터 마지막 } 까지 (객체)
+  const objStart = t.indexOf("{");
+  const objEnd = t.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    return t.slice(objStart, objEnd + 1).trim();
+  }
+  // 3) 첫 [ 부터 마지막 ] 까지 (배열)
+  const arrStart = t.indexOf("[");
+  const arrEnd = t.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd > arrStart) {
+    return t.slice(arrStart, arrEnd + 1).trim();
+  }
+  return t;
+}
+
+const stripJsonFence = extractJson;
 
 export type PhotoAnalysis = {
   activity_title: string;
@@ -26,8 +51,9 @@ const ANALYSIS_SYSTEM_PROMPT = `당신은 한국 유치원 교사의 \"활동 �
 - estimated_children: 사진에 보이는 추정 참여 아동 수 (정수)
 - suggestion: 이 활동을 기록·문서로 활용할 때의 한 줄 추천 (예: "협동 모습이 잘 드러나 관찰기록에 활용하기 좋아요.")
 
-[출력]
-지정된 JSON 스키마로만 응답.`;
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"activity_title":"...","activity_description":"...","keywords":["..."],"estimated_children":0,"suggestion":"..."}`;
 
 const ANALYSIS_SCHEMA = {
   type: "object" as const,
@@ -110,7 +136,7 @@ export async function analyzePhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as PhotoAnalysis;
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as PhotoAnalysis;
     return { ok: true, analysis: parsed };
   } catch (e) {
     return {
@@ -131,8 +157,9 @@ const CLUSTER_SYSTEM_PROMPT = `당신은 한국 유치원 활동 사진을 \"같
 - 그룹 수는 보통 2~6개. 한 사진은 한 그룹에만 속함
 - 한 그룹에 정확히 한 아이만 포함되도록 (여러 명이 함께 찍힌 단체사진은 가능하면 제외)
 
-[출력]
-지정된 JSON 스키마로만 응답.`;
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"clusters":[{"description":"...","photo_indices":[0,1]}]}`;
 
 const CLUSTER_SCHEMA = {
   type: "object" as const,
@@ -217,7 +244,7 @@ export async function clusterPhotosAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as { clusters: PhotoCluster[] };
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as { clusters: PhotoCluster[] };
     return { ok: true, clusters: parsed.clusters };
   } catch (e) {
     return {
@@ -333,7 +360,11 @@ const SUMMARIES_SYSTEM_PROMPT = `당신은 한국 유치원 담임교사가 \"�
 - 매칭된 사진이 있는 원아: 사진에서 추정할 수 있는 활동 모습 위주
 - 매칭된 사진이 없는 원아: 활동 정보만으로 일반적이지만 따뜻한 한 줄
 - 추측·과장·이름 호칭 외 신상 추측 금지
-- 출력 순서는 입력 원아 순서와 동일하게 1:1 매칭`;
+- 출력 순서는 입력 원아 순서와 동일하게 1:1 매칭
+
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"summaries":["문장1","문장2","문장3"]}`;
 
 const SUMMARIES_SCHEMA = {
   type: "object" as const,
@@ -404,7 +435,7 @@ export async function generateChildSummariesAction(args: {
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
-    const parsed = JSON.parse(jsonText) as { summaries: string[] };
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as { summaries: string[] };
     if (!Array.isArray(parsed.summaries)) {
       return { ok: false, error: "응답 형식 오류" };
     }
@@ -413,6 +444,313 @@ export async function generateChildSummariesAction(args: {
     return {
       ok: false,
       error: e instanceof Error ? e.message : "일괄 생성 실패",
+    };
+  }
+}
+
+// ── 원아별 활동 기록 초안 생성 (URL 사진 + 교사 메모 + 세션 정보 기반) ──
+const CHILD_DRAFT_SYSTEM_PROMPT = `당신은 한국 어린이집·유치원 담임교사가 한 원아의 오늘 활동 기록을 정리하도록 돕는 AI 보조 도구입니다.
+
+[작성 원칙]
+- 4~6 문장, 200~350자.
+- 사진·교사 메모·세션 활동 정보를 자연스럽게 엮어서 그 원아의 모습 중심으로 묘사.
+- 객관적 사실 위주 (관찰된 행동·표정·상호작용). 추측·과장 금지.
+- "○○이는…" 처럼 원아 이름으로 시작하는 문장을 1~2번 포함.
+- 마지막 1~2 문장은 발달·관심사 측면의 짧은 코멘트나 다음 관찰 포인트 제안.
+- 마크다운/이모지/리스트/제목 사용 금지. 평이한 평서문.
+- 본문만 출력.`;
+
+export async function generateChildActivityDraftAction(args: {
+  childName: string;
+  teacherMemo: string;
+  sessionTitle: string | null;
+  sessionAiContent: string | null;
+  sessionKeywords: string[];
+  photoUrls: string[];
+}): Promise<{ ok: true; draft: string } | { ok: false; error: string }> {
+  try {
+    const photos = (args.photoUrls ?? []).slice(0, 4);
+    const promptText = [
+      `[원아] ${args.childName}`,
+      args.sessionTitle ? `[활동 제목] ${args.sessionTitle}` : "",
+      args.sessionAiContent ? `[활동 요약]\n${args.sessionAiContent}` : "",
+      args.sessionKeywords.length
+        ? `[활동 키워드] ${args.sessionKeywords.join(", ")}`
+        : "",
+      args.teacherMemo.trim()
+        ? `[교사 메모]\n${args.teacherMemo.trim()}`
+        : `[교사 메모] (없음 — 활동 정보만으로 작성하세요)`,
+      photos.length
+        ? `[첨부] ${photos.length}장의 활동 사진이 포함되어 있습니다. 사진에서 확인되는 ${args.childName}의 모습을 활용해 주세요.`
+        : "",
+      "",
+      `위 정보를 바탕으로 ${args.childName}의 오늘 활동 초안을 작성하세요.`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const client = getAnthropic();
+    const stream = client.messages.stream({
+      model: MODEL,
+      max_tokens: 1200,
+      system: [
+        {
+          type: "text",
+          text: CHILD_DRAFT_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            ...photos.map((url) => ({
+              type: "image" as const,
+              source: { type: "url" as const, url },
+            })),
+            { type: "text" as const, text: promptText },
+          ],
+        },
+      ],
+    });
+    const final = await stream.finalMessage();
+    const draft = final.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("")
+      .trim();
+    if (!draft) return { ok: false, error: "초안이 생성되지 않았어요." };
+    return { ok: true, draft };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "초안 생성 실패",
+    };
+  }
+}
+
+// ── 프로필 기반 사진 자동 분류 ──
+export type ProfileMatchInput = {
+  childId: string;
+  dataUrl: string;
+  label?: string; // 견종 라벨(데모 힌트)
+};
+export type UploadMatchInput = { photoId: string; dataUrl: string };
+
+const AUTO_CLASSIFY_SYSTEM_PROMPT = `당신은 강아지 사진의 견종(외형·색·무늬)을 판별해 프로필과 매칭하는 AI입니다.
+[프로필] 강아지들(각 견종 라벨 제공)과 [사진] 강아지들이 주어집니다.
+각 [사진]의 강아지 견종을 시각적으로 판별한 뒤, 같은 견종의 [프로필] 인덱스로 매칭하세요.
+- 같은 견종이면 그 프로필 인덱스, 어느 프로필 견종과도 다르면 -1
+- 한 사진은 한 프로필에만 매칭 (가장 가까운 하나)
+- 같은 견종 사진이 여러 장이면 모두 같은 프로필로 매칭
+
+[출력 — 매우 중요]
+- 반드시 다음 형식의 **JSON 객체 하나만** 출력하세요. 다른 텍스트(인사·설명·코드블록·마크다운) 절대 금지.
+{"matches":[{"upload":0,"profile":2},{"upload":1,"profile":-1}]}`;
+
+type ImgBlock = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+    data: string;
+  };
+};
+
+function toImageBlock(dataUrl: string): ImgBlock | null {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: parsed.mediaType as ImgBlock["source"]["media_type"],
+      data: parsed.data,
+    },
+  };
+}
+
+/**
+ * 업로드 사진을 원아 프로필 강아지와 외형 매칭해 원아별 배정을 반환.
+ * 반환: photoId -> childId
+ */
+export async function autoClassifyByProfileAction(args: {
+  profiles: ProfileMatchInput[];
+  uploads: UploadMatchInput[];
+}): Promise<
+  | { ok: true; assignments: Record<string, string> }
+  | { ok: false; error: string }
+> {
+  try {
+    if (args.profiles.length === 0 || args.uploads.length === 0) {
+      return { ok: true, assignments: {} };
+    }
+
+    const content: Array<ImgBlock | { type: "text"; text: string }> = [];
+    content.push({ type: "text", text: "[프로필 강아지]" });
+    args.profiles.forEach((p, i) => {
+      const block = toImageBlock(p.dataUrl);
+      if (!block) return;
+      content.push({
+        type: "text",
+        text: p.label ? `프로필 ${i} (견종: ${p.label})` : `프로필 ${i}`,
+      });
+      content.push(block);
+    });
+    content.push({ type: "text", text: "[분류할 사진]" });
+    args.uploads.forEach((u, i) => {
+      const block = toImageBlock(u.dataUrl);
+      if (!block) return;
+      content.push({ type: "text", text: `사진 ${i}` });
+      content.push(block);
+    });
+    content.push({
+      type: "text",
+      text: `위 ${args.uploads.length}장의 [사진] 각각을 가장 닮은 [프로필] 인덱스(없으면 -1)로 매칭해 JSON 으로 응답하세요.`,
+    });
+
+    const client = getAnthropic();
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 800,
+      system: [
+        {
+          type: "text",
+          text: AUTO_CLASSIFY_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content }],
+    });
+
+    const jsonText = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
+    const parsed = JSON.parse(stripJsonFence(jsonText)) as {
+      matches: Array<{ upload: number; profile: number }>;
+    };
+
+    const assignments: Record<string, string> = {};
+    for (const m of parsed.matches ?? []) {
+      const u = args.uploads[m.upload];
+      const p = args.profiles[m.profile];
+      if (u && p && m.profile >= 0) assignments[u.photoId] = p.childId;
+    }
+    return { ok: true, assignments };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "자동 분류 실패",
+    };
+  }
+}
+
+// ── 저장된 원아별 사진 다시 불러오기 ──
+export async function loadSavedChildPhotosAction(args: {
+  classroomId: string;
+  date: string;
+}): Promise<
+  | { ok: true; byChild: Record<string, Array<{ url: string; order_num: number }>> }
+  | { ok: false; error: string }
+> {
+  try {
+    const supabase = createAdminClient();
+    const { data: session } = await supabase
+      .from("activity_sessions")
+      .select("id")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+    if (!session) return { ok: true, byChild: {} };
+
+    const { data: rows, error } = await supabase
+      .from("child_activity_photos")
+      .select("child_id, order_num, files(url)")
+      .eq("session_id", session.id)
+      .order("order_num");
+    if (error) return { ok: false, error: error.message };
+
+    const byChild: Record<string, Array<{ url: string; order_num: number }>> = {};
+    for (const r of (rows ?? []) as Array<{
+      child_id: string;
+      order_num: number;
+      files: { url: string } | { url: string }[] | null;
+    }>) {
+      const file = Array.isArray(r.files) ? r.files[0] : r.files;
+      if (!file?.url) continue;
+      (byChild[r.child_id] ??= []).push({ url: file.url, order_num: r.order_num });
+    }
+    return { ok: true, byChild };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "사진 로드 실패" };
+  }
+}
+
+// ── 매일 활동 기록 저장 ──
+// 1) activity_sessions (classroom_id, date) upsert — title 갱신
+// 2) 각 원아 groups → activity_records (session_id, child_id) upsert
+//    photos(dataUrl)는 storage 업로드 미구현 — 현재는 메타만 저장
+export async function saveActivityRecordAction(args: {
+  classroomId: string;
+  teacherId: string;
+  date: string;
+  activityTitle: string | null;
+  children: Array<{
+    childId: string;
+    photos: Array<{ dataUrl: string; activity: string | null }>;
+  }>;
+}): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> {
+  try {
+    if (!args.classroomId)
+      return { ok: false, error: "담당 반 정보가 없어요." };
+    if (!args.date) return { ok: false, error: "날짜가 비어있어요." };
+
+    const supabase = createAdminClient();
+
+    // 1) 세션 upsert — UNIQUE(classroom_id, date)
+    const { data: session, error: sessionError } = await supabase
+      .from("activity_sessions")
+      .upsert(
+        {
+          classroom_id: args.classroomId,
+          date: args.date,
+          title: args.activityTitle,
+          created_by: args.teacherId,
+        },
+        { onConflict: "classroom_id,date" },
+      )
+      .select("id")
+      .single();
+    if (sessionError || !session) {
+      return {
+        ok: false,
+        error: sessionError?.message ?? "세션 저장 실패",
+      };
+    }
+    const sessionId = session.id as string;
+
+    // 2) 원아별 레코드 upsert — UNIQUE(session_id, child_id). memo는 기존 보존
+    if (args.children.length > 0) {
+      const records = args.children.map((g) => ({
+        session_id: sessionId,
+        child_id: g.childId,
+        updated_by: args.teacherId,
+      }));
+      const { error: recordsError } = await supabase
+        .from("activity_records")
+        .upsert(records, { onConflict: "session_id,child_id" });
+      if (recordsError) {
+        return { ok: false, error: recordsError.message };
+      }
+    }
+
+    revalidatePath("/dashboard/activities");
+    return { ok: true, sessionId };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "활동 기록 저장 실패",
     };
   }
 }
