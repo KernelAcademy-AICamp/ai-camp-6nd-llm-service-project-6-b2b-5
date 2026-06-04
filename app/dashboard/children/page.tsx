@@ -88,7 +88,7 @@ export default async function ChildrenPage({
   ] = await Promise.all([
     supabase.from("classrooms").select("*").order("age_group", { ascending: false }),
     supabase.from("children").select("*").order("name"),
-    supabase.from("parent_child").select("*"),
+    supabase.from("parent_child").select("*").order("is_primary", { ascending: false }).order("created_at", { ascending: true }),
     supabase.from("profiles").select("*").eq("role", "parent"),
     supabase.from("staff_classrooms").select("*"),
   ]);
@@ -138,8 +138,7 @@ export default async function ChildrenPage({
     { name: string; phone: string | null; relation: string; hasAccount: boolean }
   >();
   for (const link of parentLinks) {
-    const existing = primaryGuardianByChild.get(link.child_id);
-    if (existing && !link.is_primary) continue;
+    if (!link.is_primary) continue;
     if (link.parent_id) {
       const prof = parentProfileById.get(link.parent_id);
       primaryGuardianByChild.set(link.child_id, {

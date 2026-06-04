@@ -169,6 +169,7 @@ export function ActivityRecordForm({
   attendanceCount,
   todayMemoHref,
   initialStep,
+  nextStepHref,
 }: {
   childOptions: ChildOption[];
   classroomName: string;
@@ -177,6 +178,7 @@ export function ActivityRecordForm({
   attendanceCount: number; // 오늘 출석 인원 수 (퇴소·미출석 제외)
   todayMemoHref: string;
   initialStep: StepNumber;
+  nextStepHref?: string;
 }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1883,10 +1885,16 @@ export function ActivityRecordForm({
                 </>
               )}
             </button>
-            {/* 다음 단계 — 저장 완료(변경 없음) 후에만 활성 */}
+            {/* 다음 단계 — 저장 완료(변경 없음) 후에만 활성. nextStepHref 있으면 별도 라우트로 이동 */}
             <button
               type="button"
-              onClick={() => tryGoStep((step + 1) as StepNumber)}
+              onClick={() => {
+                if (nextStepHref) {
+                  router.push(nextStepHref);
+                  return;
+                }
+                tryGoStep((step + 1) as StepNumber);
+              }}
               disabled={!savedOnce || dirty || saving}
               title={
                 !savedOnce || dirty

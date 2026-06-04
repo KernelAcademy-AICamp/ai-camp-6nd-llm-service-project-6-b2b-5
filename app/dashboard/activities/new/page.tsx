@@ -79,6 +79,7 @@ export default async function NewActivityPage({
         attendanceCount={attendanceCount}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         initialStep={initialStep}
+        nextStepHref={`/dashboard/activity-records${qs}`}
       />
     </main>
   );

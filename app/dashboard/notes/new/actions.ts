@@ -56,8 +56,8 @@ export async function generateNoteDraftAction(args: {
 
     const stream = client.messages.stream({
       model: MODEL,
-      max_tokens: 1500,
       thinking: { type: "adaptive" },
+      max_tokens: 1500,
       output_config: { effort: "medium" },
       system: [
         { type: "text", text: NOTE_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
@@ -106,8 +106,8 @@ export async function refineNoteAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      max_tokens: 1500,
       thinking: { type: "adaptive" },
+      max_tokens: 1500,
       output_config: { effort: "medium" },
       system: [
         { type: "text", text: REFINE_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
@@ -139,8 +139,8 @@ export async function addNoteParagraphAction(args: {
     const client = getAnthropic();
     const stream = client.messages.stream({
       model: MODEL,
-      max_tokens: 400,
       thinking: { type: "adaptive" },
+      max_tokens: 400,
       output_config: { effort: "low" },
       system: [
         { type: "text", text: ADD_PARAGRAPH_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
