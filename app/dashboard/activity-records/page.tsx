@@ -56,26 +56,50 @@ async function loadSessionAiContent(sessionId: string): Promise<string | null> {
   return (data?.session_ai_content as string | undefined) ?? null;
 }
 
+const SIGNED_URL_TTL_SECONDS = 60 * 60;
+
 async function loadChildPhotos(
   sessionId: string,
 ): Promise<Record<string, ChildPhoto[]>> {
   const supabase = createAdminClient();
   const { data } = await supabase
     .from("child_activity_photos")
-    .select("child_id, order_num, files ( url )")
+    .select("child_id, order_num, files ( bucket, storage_path )")
     .eq("session_id", sessionId)
     .order("order_num");
 
-  const result: Record<string, ChildPhoto[]> = {};
-  for (const row of (data ?? []) as Array<{
+  const rows = (data ?? []) as Array<{
     child_id: string;
     order_num: number;
-    files: { url: string }[] | { url: string } | null;
-  }>) {
-    const file = Array.isArray(row.files) ? row.files[0] : row.files;
-    const url = file?.url;
-    if (!url) continue;
-    (result[row.child_id] ??= []).push({ url, order_num: row.order_num });
+    files:
+      | { bucket: string; storage_path: string }[]
+      | { bucket: string; storage_path: string }
+      | null;
+  }>;
+
+  const signed = await Promise.all(
+    rows.map(async (row) => {
+      const file = Array.isArray(row.files) ? row.files[0] : row.files;
+      if (!file?.bucket || !file?.storage_path) return null;
+      const { data: signedData } = await supabase.storage
+        .from(file.bucket)
+        .createSignedUrl(file.storage_path, SIGNED_URL_TTL_SECONDS);
+      if (!signedData?.signedUrl) return null;
+      return {
+        child_id: row.child_id,
+        order_num: row.order_num,
+        url: signedData.signedUrl,
+      };
+    }),
+  );
+
+  const result: Record<string, ChildPhoto[]> = {};
+  for (const entry of signed) {
+    if (!entry) continue;
+    (result[entry.child_id] ??= []).push({
+      url: entry.url,
+      order_num: entry.order_num,
+    });
   }
   return result;
 }
@@ -114,6 +138,7 @@ export default async function ActivityRecordsPage({
           backHref={`/dashboard/activities/new${qs}`}
           todayMemoHref={`/dashboard/today-memo${qs}`}
           dashboardHref={`/dashboard${qs}`}
+          sessionId={null}
           sessionTitle={mock.session.title}
           sessionAiContent={mock.session.session_ai_content}
           sessionKeywords={mock.session.keywords}
@@ -144,6 +169,7 @@ export default async function ActivityRecordsPage({
         backHref={`/dashboard/activities/new${qs}`}
         todayMemoHref={`/dashboard/today-memo${qs}`}
         dashboardHref={`/dashboard${qs}`}
+        sessionId={session?.id ?? null}
         sessionTitle={session?.title ?? null}
         sessionAiContent={sessionAiContent}
         sessionKeywords={[]}

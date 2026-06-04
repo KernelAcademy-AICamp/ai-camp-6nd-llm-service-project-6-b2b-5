@@ -11,12 +11,14 @@ import {
   Bot,
   ImageIcon,
   Pencil,
+  Save,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   generateChildActivityDraftAction,
   generateChildSummariesAction,
 } from "../activities/new/actions";
+import { saveActivityRecordAction } from "./actions";
 import type { ChildOption } from "../activities/new/_form";
 
 type ChildPhoto = { url: string; order_num: number };
@@ -27,6 +29,7 @@ export function ChildActivityRecordForm({
   backHref,
   todayMemoHref,
   dashboardHref,
+  sessionId,
   sessionTitle,
   sessionAiContent,
   sessionKeywords,
@@ -37,6 +40,7 @@ export function ChildActivityRecordForm({
   backHref: string;
   todayMemoHref: string;
   dashboardHref: string;
+  sessionId: string | null;
   sessionTitle: string | null;
   sessionAiContent: string | null;
   sessionKeywords: string[];
@@ -45,11 +49,14 @@ export function ChildActivityRecordForm({
   const [selectedChildId, setSelectedChildId] = useState<string | null>(null);
   const [teacherMemos, setTeacherMemos] = useState<Record<string, string>>({});
   const [aiContents, setAiContents] = useState<Record<string, string>>({});
+  const [savedAt, setSavedAt] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [pendingChildId, setPendingChildId] = useState<string | null>(null);
+  const [savingChildId, setSavingChildId] = useState<string | null>(null);
   const [isBulkPending, startBulkTransition] = useTransition();
   const [isDraftPending, startDraftTransition] = useTransition();
+  const [isSavePending, startSaveTransition] = useTransition();
 
   const childrenWithPhotosCount = useMemo(
     () =>
@@ -105,6 +112,39 @@ export function ChildActivityRecordForm({
         });
         const ok = result.summaries.filter((s) => s && s.trim()).length;
         setSaveToast(`${ok}명 원아 AI 내용 일괄 생성 완료`);
+        window.setTimeout(() => setSaveToast(null), 2500);
+      } else {
+        setError(result.error);
+      }
+    });
+  }
+
+  function saveDraftForChild(childId: string) {
+    const child = children.find((c) => c.id === childId);
+    if (!child) return;
+    if (!sessionId) {
+      setError(
+        "오늘 날짜의 활동 세션이 DB 에 없어서 저장할 수 없습니다. (mock 모드 또는 1단계 미저장)",
+      );
+      return;
+    }
+    const aiContent = (aiContents[childId] ?? "").trim();
+    if (!aiContent) {
+      setError("저장할 내용이 비어있습니다. AI 초안을 생성하거나 직접 입력해주세요.");
+      return;
+    }
+    setError(null);
+    setSavingChildId(childId);
+    startSaveTransition(async () => {
+      const result = await saveActivityRecordAction({
+        sessionId,
+        childId,
+        aiContent,
+      });
+      setSavingChildId(null);
+      if (result.ok) {
+        setSavedAt((prev) => ({ ...prev, [childId]: result.aiGeneratedAt }));
+        setSaveToast(`${child.name} 저장 완료`);
         window.setTimeout(() => setSaveToast(null), 2500);
       } else {
         setError(result.error);
@@ -301,6 +341,11 @@ export function ChildActivityRecordForm({
               const aiValue = aiContents[selected.id] ?? "";
               const isThisChildPending =
                 isDraftPending && pendingChildId === selected.id;
+              const isThisChildSaving =
+                isSavePending && savingChildId === selected.id;
+              const lastSavedAt = savedAt[selected.id];
+              const canSave =
+                !!sessionId && aiValue.trim().length > 0 && !isThisChildSaving;
               return (
                 <div className="space-y-3">
 
@@ -309,10 +354,7 @@ export function ChildActivityRecordForm({
                     <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-100">
                       <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
                         <Bot className="h-3.5 w-3.5" />
-                        매일 활동 기록
-                        <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">
-                          session_ai_content
-                        </span>
+                        오늘의 활동 기록
                       </p>
                       <div className="mt-2 rounded-lg border-l-4 border-slate-300 bg-white p-2 text-xs leading-relaxed text-slate-700">
                         {sessionAiContent ?? "1단계 AI 분석 결과가 아직 없습니다."}
@@ -324,9 +366,6 @@ export function ChildActivityRecordForm({
                       <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
                         <ImageIcon className="h-3.5 w-3.5" />
                         활동 사진
-                        <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">
-                          child_activity_photos
-                        </span>
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {photos.length === 0 ? (
@@ -357,9 +396,6 @@ export function ChildActivityRecordForm({
                       <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
                         <Pencil className="h-3.5 w-3.5" />
                         교사 메모
-                        <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">
-                          memo
-                        </span>
                       </p>
                       <textarea
                         value={memoValue}
@@ -375,15 +411,12 @@ export function ChildActivityRecordForm({
                       />
                     </div>
 
-                    {/* 2단계 AI 생성 내용 */}
+                    {/* {원아 이름}의 활동 분석 */}
                     <div className="rounded-xl bg-emerald-50/40 p-3 ring-2 ring-emerald-300">
                       <div className="flex items-center justify-between gap-2">
                         <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
                           <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
-                          2단계 AI 생성 내용
-                          <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">
-                            ai_content
-                          </span>
+                          {selected.name}의 활동 분석
                         </p>
                         <button
                           type="button"
@@ -420,28 +453,46 @@ export function ChildActivityRecordForm({
                           }))
                         }
                         rows={6}
-                        placeholder={
-                          "사진 1~2장 + 매일 활동 + 기질 + 교사 메모로 AI 초안 생성"
-                        }
+                        placeholder="AI 초안 생성 버튼을 클릭하여 작성하세요."
                         className="mt-2 w-full resize-none rounded-lg border border-emerald-200 bg-white p-2 text-xs leading-relaxed text-slate-800 focus:border-emerald-400 focus:outline-none"
                       />
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <p className="text-[11px] text-slate-500">
+                          {lastSavedAt
+                            ? `마지막 저장 · ${new Date(lastSavedAt).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}`
+                            : sessionId
+                              ? "AI 초안을 검토·편집한 후 저장하세요."
+                              : "오늘 DB 세션이 없어 저장할 수 없어요."}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => saveDraftForChild(selected.id)}
+                          disabled={!canSave}
+                          className={cn(
+                            "inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                            canSave
+                              ? "bg-slate-900 text-white hover:bg-slate-700"
+                              : "bg-slate-100 text-slate-400",
+                          )}
+                        >
+                          {isThisChildSaving ? (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              저장 중…
+                            </>
+                          ) : (
+                            <>
+                              <Save className="h-3 w-3" />
+                              저장
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
               );
             })()}
-
-            <p className="mt-3 text-[11px] text-slate-400">
-              저장 시 →{" "}
-              <code className="rounded bg-slate-100 px-1 text-slate-600">
-                activity_records.ai_content
-              </code>{" "}
-              업데이트 ·{" "}
-              <code className="rounded bg-slate-100 px-1 text-slate-600">
-                session_ai_content
-              </code>{" "}
-              원본 보존
-            </p>
           </>
         )}
       </section>
@@ -453,7 +504,7 @@ export function ChildActivityRecordForm({
           className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 transition-colors hover:bg-slate-50"
         >
           <ArrowLeft className="h-4 w-4" />
-          1단계 — 매일 활동 기록
+          이전 단계
         </Link>
         <Link
           href={dashboardHref}
