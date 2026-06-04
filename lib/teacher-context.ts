@@ -1,7 +1,9 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
-  getTemperamentByName,
-  type Temperament,
+  TEMPERAMENT_TYPE_META,
+  isTemperamentType,
+  isSensitivity,
+  type TemperamentType,
   type Sensitivity,
 } from "@/lib/children-profiles";
 
@@ -64,8 +66,8 @@ export type ChildContextPayload = {
   keywords: string[];
   memos: Array<{ date: string; text: string; sessionTitle: string | null }>;
   sessionTitles: string[]; // sessions found in period
-  temperament: Temperament | null; // 원아 기질 5칼럼 (이름 매핑)
-  sensitivity: Sensitivity | null; // 기질 예민도 상/중/하
+  temperament: TemperamentType | null; // 기질 유형 (DB children.temperament)
+  sensitivity: Sensitivity | null; // 기질 예민도 상/중/하 (DB children.sensitivity)
 };
 
 export async function loadChildContext(args: {
@@ -85,12 +87,20 @@ export async function loadChildContext(args: {
     .maybeSingle();
   if (!myClass) return null;
 
-  const { data: child } = await supabase
+  const { data: childRow } = await supabase
     .from("children")
-    .select("id, name")
+    .select("id, name, temperament, sensitivity")
     .eq("id", args.childId)
     .eq("classroom_id", myClass.id)
     .maybeSingle();
+  const child = childRow as
+    | {
+        id: string;
+        name: string;
+        temperament: string | null;
+        sensitivity: string | null;
+      }
+    | null;
   if (!child) return null;
 
   // 기간 내 세션
@@ -147,8 +157,13 @@ export async function loadChildContext(args: {
     ),
   );
 
-  // 원아 이름으로 기질·예민도 매핑 (관찰일지 AI 반영용)
-  const temperamentInfo = getTemperamentByName(child.name);
+  // 기질·예민도 — DB(children) 값을 정본으로 사용 (관찰일지 AI 반영용). 유효값만 통과.
+  const temperament = isTemperamentType(child.temperament)
+    ? child.temperament
+    : null;
+  const sensitivity = isSensitivity(child.sensitivity)
+    ? child.sensitivity
+    : null;
 
   return {
     child: { id: child.id, name: child.name },
@@ -158,8 +173,8 @@ export async function loadChildContext(args: {
     keywords: args.keywords,
     memos,
     sessionTitles,
-    temperament: temperamentInfo?.temperament ?? null,
-    sensitivity: temperamentInfo?.sensitivity ?? null,
+    temperament,
+    sensitivity,
   };
 }
 
@@ -179,16 +194,15 @@ export function contextToPromptText(
 
   // 기질 블록 — 관찰일지 등에서만 옵션으로 주입(알림장 기본 미포함)
   if (opts?.includeTemperament && ctx.temperament) {
-    const t = ctx.temperament;
+    const meta = TEMPERAMENT_TYPE_META[ctx.temperament];
     parts.push(
       [
         `\n[원아 기질 — 행동 해석의 보조 참고]`,
-        `· 활동성: ${t.활동성}`,
-        `· 사회성: ${t.사회성}`,
-        `· 정서성: ${t.정서성}`,
-        `· 적응성: ${t.적응성}`,
-        `· 자기조절: ${t.자기조절}`,
-        ctx.sensitivity ? `· 기질 예민도: ${ctx.sensitivity}` : "",
+        `· 기질 유형: ${meta.label}`,
+        ctx.sensitivity
+          ? `· 기질 예민도: ${ctx.sensitivity} (상=민감 / 하=둔감)`
+          : "",
+        `· 기록 가이드: ${meta.guide}`,
       ]
         .filter(Boolean)
         .join("\n"),

@@ -49,6 +49,48 @@ export type ParentInfo = {
 /** 기질 예민도 (Pluess 3그룹) */
 export type Sensitivity = "상" | "중" | "하";
 
+/**
+ * 기질 유형 (Thomas & Chess 3분류) — DB `children.temperament` 정본.
+ * 위 5차원(Temperament)은 보조 디테일로 유지하되, 관찰일지 AI 반영의 1차 기준은 이 유형값이다.
+ */
+export type TemperamentType = "easy" | "difficult" | "slow_to_warm_up";
+
+/**
+ * 기질 유형별 한글 라벨 + 관찰일지 작성 가이드.
+ * 기획의도("기질 → 관찰일지 AI 반영")에 따라, 각 유형이 AI가 관찰 행동을 해석·기록하는
+ * 방식을 안내한다. 단정·낙인 금지 원칙은 관찰일지 시스템 프롬프트가 별도로 강제한다.
+ */
+export const TEMPERAMENT_TYPE_META: Record<
+  TemperamentType,
+  { label: string; guide: string }
+> = {
+  easy: {
+    label: "순한 기질(easy)",
+    guide:
+      "새 활동·일과 변화에 비교적 수월하게 적응합니다. 안정적인 참여 속에서 드러나는 작은 도전·주도성·또래 상호작용을 구체적으로 포착해 기록하세요.",
+  },
+  difficult: {
+    label: "까다로운 기질(difficult)",
+    guide:
+      "감정 기복이 크고 새로운 자극·변화에 강하게 반응할 수 있습니다. 자극 상황에서의 반응과 스스로 진정해가는 과정, 교사의 지원 방식을 과정 중심으로 관찰·기록하세요.",
+  },
+  slow_to_warm_up: {
+    label: "느린 기질(slow_to_warm_up)",
+    guide:
+      "새 환경·관계에 적응하는 데 시간이 필요한 편입니다. 충분히 지켜보며 적응 속도와 점진적 변화, 편안해지는 순간을 인내심 있게 관찰·기록하세요.",
+  },
+};
+
+/** 문자열이 유효한 기질 유형인지 확인 (DB 값 검증용) */
+export function isTemperamentType(v: string | null): v is TemperamentType {
+  return v === "easy" || v === "difficult" || v === "slow_to_warm_up";
+}
+
+/** 문자열이 유효한 예민도인지 확인 (DB 값 검증용) */
+export function isSensitivity(v: string | null): v is Sensitivity {
+  return v === "상" || v === "중" || v === "하";
+}
+
 export type ChildProfile = {
   id: string;
   name: string;

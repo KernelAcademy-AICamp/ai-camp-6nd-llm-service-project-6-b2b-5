@@ -8,6 +8,8 @@ import { getAnthropic, MODEL } from "@/lib/anthropic";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 const PHOTO_BUCKET = "child-photos";
+/** 원아 1명당 하루(세션) 활동 사진 상한 (저장 스펙) */
+const MAX_PHOTOS_PER_CHILD = 6;
 
 export type PhotoAnalysis = {
   activity_title: string;
@@ -615,6 +617,12 @@ export async function saveActivityRecordAction(args: {
   teacherId: string;
   date: string; // YYYY-MM-DD
   activityTitle: string | null;
+  /** 1단계 AI 활동 분석 — session_ai_content 로 저장 */
+  activityAnalysis?: {
+    description?: string;
+    keywords?: string[];
+    suggestion?: string;
+  } | null;
   children: SaveChildGroupInput[];
 }): Promise<
   | { ok: true; sessionId: string; savedPhotos: number; savedChildren: number }
@@ -670,6 +678,21 @@ export async function saveActivityRecordAction(args: {
         .eq("id", sessionId);
     }
 
+    // 2-1) 1단계 AI 활동 분석 → session_ai_content 텍스트 구성
+    const an = args.activityAnalysis;
+    const sessionAiContent =
+      args.activityTitle || an?.description || an?.keywords?.length
+        ? [
+            args.activityTitle ? `[활동] ${args.activityTitle}` : "",
+            an?.description ?? "",
+            an?.keywords?.length ? `[키워드] ${an.keywords.join(", ")}` : "",
+            an?.suggestion ? `[추천] ${an.suggestion}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : null;
+    const nowIso = new Date().toISOString();
+
     // 3) 재저장 멱등성 — 이 세션의 기존 분류 사진 링크 제거 후 재등록
     await supabase
       .from("child_activity_photos")
@@ -682,7 +705,9 @@ export async function saveActivityRecordAction(args: {
     for (const group of groups) {
       let childPhotoSaved = 0;
       let order = 0;
-      for (const photo of group.photos) {
+      // 원아당 하루 사진 상한 적용 (저장 스펙: 6장)
+      const childPhotos = group.photos.slice(0, MAX_PHOTOS_PER_CHILD);
+      for (const photo of childPhotos) {
         const parsed = parseDataUrl(photo.dataUrl);
         if (!parsed) continue;
         const ext = extFromMediaType(parsed.mediaType);
@@ -760,17 +785,23 @@ export async function saveActivityRecordAction(args: {
         .eq("child_id", group.childId)
         .maybeSingle();
       if ((rec as { id: string } | null)?.id) {
-        if (memo) {
-          await supabase
-            .from("activity_records")
-            .update({ memo, updated_by: args.teacherId })
-            .eq("id", (rec as { id: string }).id);
-        }
+        await supabase
+          .from("activity_records")
+          .update({
+            ...(memo ? { memo } : {}),
+            session_ai_content: sessionAiContent,
+            session_ai_generated_at: sessionAiContent ? nowIso : null,
+            updated_by: args.teacherId,
+          })
+          .eq("id", (rec as { id: string }).id);
       } else {
         await supabase.from("activity_records").insert({
           session_id: sessionId,
           child_id: group.childId,
           memo,
+          session_ai_content: sessionAiContent,
+          session_ai_generated_at: sessionAiContent ? nowIso : null,
+          created_by: args.teacherId,
           updated_by: args.teacherId,
         });
       }
@@ -781,63 +812,6 @@ export async function saveActivityRecordAction(args: {
   } catch (e) {
     console.error("[활동기록] 저장 실패", e);
     return { ok: false, error: e instanceof Error ? e.message : "저장 실패" };
-  }
-}
-
-/**
- * 특정 세션에서 원아별로 저장된 사진을 다시 불러온다. (저장 검증용)
- * 반환: childId -> 사진 URL 배열
- */
-export async function loadSavedChildPhotosAction(args: {
-  classroomId: string;
-  date: string;
-}): Promise<
-  | { ok: true; sessionId: string | null; byChild: Record<string, string[]> }
-  | { ok: false; error: string }
-> {
-  try {
-    const supabase = createAdminClient();
-    const { data: session } = await supabase
-      .from("activity_sessions")
-      .select("id")
-      .eq("classroom_id", args.classroomId)
-      .eq("date", args.date)
-      .maybeSingle();
-    const sessionId = (session as { id: string } | null)?.id ?? null;
-    if (!sessionId) return { ok: true, sessionId: null, byChild: {} };
-
-    const { data: rows } = await supabase
-      .from("child_activity_photos")
-      .select("child_id, order_num, files ( bucket, storage_path, url )")
-      .eq("session_id", sessionId)
-      .order("order_num", { ascending: true });
-
-    const byChild: Record<string, string[]> = {};
-    for (const r of (rows ?? []) as Array<{
-      child_id: string;
-      files:
-        | { bucket: string; storage_path: string; url: string }
-        | { bucket: string; storage_path: string; url: string }[]
-        | null;
-    }>) {
-      const file = Array.isArray(r.files) ? r.files[0] : r.files;
-      if (!file) continue;
-      // private 버킷 대응 — 1시간 서명 URL 생성, 실패 시 저장된 url 사용
-      let viewUrl = file.url;
-      try {
-        const { data: signed } = await supabase.storage
-          .from(file.bucket)
-          .createSignedUrl(file.storage_path, 3600);
-        if (signed?.signedUrl) viewUrl = signed.signedUrl;
-      } catch {
-        // 무시 — fallback url 사용
-      }
-      (byChild[r.child_id] ??= []).push(viewUrl);
-    }
-    return { ok: true, sessionId, byChild };
-  } catch (e) {
-    console.error("[활동기록] 저장 사진 조회 실패", e);
-    return { ok: false, error: e instanceof Error ? e.message : "조회 실패" };
   }
 }
 
@@ -978,5 +952,181 @@ export async function autoClassifyByProfileAction(args: {
   } catch (e) {
     console.error("[활동기록] 자동 분류 실패", e);
     return { ok: false, error: e instanceof Error ? e.message : "자동 분류 실패" };
+  }
+}
+
+// =============================================================
+// [2단계 원아별 메모 저장 — 자리(저장 구조만)]
+// 2단계(원아 활동 기록)의 원아별 메모 저장은 2단계 작업자가 구현한다.
+// 저장 대상은 activity_records.ai_content (+ ai_generated_at) — 컬럼은 준비됨.
+// (session_id, child_id) 당 1행 upsert. 1단계 저장으로 세션이 먼저 생성돼 있어야 함.
+// =============================================================
+
+/**
+ * 활동 기록 삭제 (편집 불가·삭제만 지원).
+ * - childId 지정: 해당 원아의 분류 사진 + 기록만 삭제
+ * - childId 없음: 세션 전체 삭제 (cascade로 원아 기록·사진 링크 제거)
+ * 참고: files/Storage 원본은 데모상 정리 생략(고아 가능) — 보관정책 정리 작업에서 처리.
+ */
+export async function deleteActivityAction(args: {
+  sessionId: string;
+  childId?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    if (!args.sessionId) return { ok: false, error: "세션 정보가 없어요." };
+    const supabase = createAdminClient();
+    if (args.childId) {
+      await supabase
+        .from("child_activity_photos")
+        .delete()
+        .eq("session_id", args.sessionId)
+        .eq("child_id", args.childId);
+      await supabase
+        .from("activity_records")
+        .delete()
+        .eq("session_id", args.sessionId)
+        .eq("child_id", args.childId);
+    } else {
+      // 세션 삭제 → child_activity_photos / activity_records 는 FK cascade
+      const { error } = await supabase
+        .from("activity_sessions")
+        .delete()
+        .eq("id", args.sessionId);
+      if (error) return { ok: false, error: error.message };
+    }
+    revalidatePath("/dashboard/activities");
+    return { ok: true };
+  } catch (e) {
+    console.error("[활동기록] 삭제 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "삭제 실패" };
+  }
+}
+
+// =============================================================
+// 재진입 이어쓰기 — 오늘(해당 반) 저장된 1단계를 폼으로 복원
+// =============================================================
+
+function parseSessionAi(
+  title: string | null,
+  content: string | null,
+): {
+  activity_title: string;
+  activity_description: string;
+  keywords: string[];
+  suggestion: string;
+} {
+  let activityTitle = title ?? "";
+  let description = "";
+  let keywords: string[] = [];
+  let suggestion = "";
+  for (const l of (content ?? "").split("\n")) {
+    if (l.startsWith("[활동]")) {
+      if (!activityTitle) activityTitle = l.replace("[활동]", "").trim();
+    } else if (l.startsWith("[키워드]")) {
+      keywords = l
+        .replace("[키워드]", "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } else if (l.startsWith("[추천]")) {
+      suggestion = l.replace("[추천]", "").trim();
+    } else if (l.trim() && !l.startsWith("[")) {
+      description += (description ? "\n" : "") + l.trim();
+    }
+  }
+  return {
+    activity_title: activityTitle || "활동 기록",
+    activity_description: description,
+    keywords,
+    suggestion,
+  };
+}
+
+export type ResumePhoto = { id: string; url: string; childId: string };
+
+/**
+ * 오늘(해당 반) 저장된 활동 기록(1단계)을 폼 복원용으로 반환.
+ * 사진은 서명 URL(표시용). 2단계 작성 진입 시 사용.
+ */
+export async function loadResumeSessionAction(args: {
+  classroomId: string;
+  date: string;
+}): Promise<
+  | { ok: true; exists: false }
+  | {
+      ok: true;
+      exists: true;
+      hasStep2: boolean;
+      analysis: PhotoAnalysis;
+      photos: ResumePhoto[];
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    if (!args.classroomId) return { ok: true, exists: false };
+    const supabase = createAdminClient();
+    const { data: session } = await supabase
+      .from("activity_sessions")
+      .select("id, title")
+      .eq("classroom_id", args.classroomId)
+      .eq("date", args.date)
+      .maybeSingle();
+    if (!session) return { ok: true, exists: false };
+
+    const sessionId = (session as { id: string; title: string | null }).id;
+    const title = (session as { id: string; title: string | null }).title;
+
+    const [{ data: recs }, { data: caps }] = await Promise.all([
+      supabase
+        .from("activity_records")
+        .select("child_id, session_ai_content, ai_content")
+        .eq("session_id", sessionId),
+      supabase
+        .from("child_activity_photos")
+        .select("child_id, file_id, order_num, files ( bucket, storage_path, url )")
+        .eq("session_id", sessionId)
+        .order("order_num", { ascending: true }),
+    ]);
+
+    const records = (recs ?? []) as {
+      child_id: string;
+      session_ai_content: string | null;
+      ai_content: string | null;
+    }[];
+    const hasStep2 = records.some((r) => (r.ai_content ?? "").trim().length > 0);
+    const parsed = parseSessionAi(title, records[0]?.session_ai_content ?? null);
+
+    const photos: ResumePhoto[] = [];
+    for (const c of (caps ?? []) as {
+      child_id: string;
+      file_id: string;
+      files:
+        | { bucket: string; storage_path: string; url: string }
+        | { bucket: string; storage_path: string; url: string }[]
+        | null;
+    }[]) {
+      const file = Array.isArray(c.files) ? c.files[0] : c.files;
+      if (!file) continue;
+      let url = file.url;
+      try {
+        const { data: signed } = await supabase.storage
+          .from(file.bucket || PHOTO_BUCKET)
+          .createSignedUrl(file.storage_path, 3600);
+        if (signed?.signedUrl) url = signed.signedUrl;
+      } catch {
+        // fallback
+      }
+      photos.push({ id: c.file_id, url, childId: c.child_id });
+    }
+
+    const analysis: PhotoAnalysis = {
+      ...parsed,
+      estimated_children: new Set(photos.map((p) => p.childId)).size,
+    };
+
+    return { ok: true, exists: true, hasStep2, analysis, photos };
+  } catch (e) {
+    console.error("[활동기록] 이어쓰기 로드 실패", e);
+    return { ok: false, error: e instanceof Error ? e.message : "불러오기 실패" };
   }
 }

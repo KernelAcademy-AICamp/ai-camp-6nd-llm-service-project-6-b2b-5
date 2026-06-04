@@ -33,6 +33,7 @@ const MENU: {
   label: string;
   icon: typeof LayoutDashboard;
   roles: Role[];
+  children?: { href: string; label: string }[];
 }[] = [
   { href: "/dashboard", label: "대시보드", icon: LayoutDashboard,
     roles: ["director", "teacher", "admin"] },
@@ -42,8 +43,12 @@ const MENU: {
     roles: ["director", "admin"] },
   { href: "/dashboard/children", label: "담당 원아", icon: Baby,
     roles: ["teacher"] },
-  { href: "/dashboard/activities/new", label: "활동 기록", icon: Camera,
-    roles: ["teacher"] },
+  { href: "/dashboard/activities", label: "활동 기록", icon: Camera,
+    roles: ["teacher"],
+    children: [
+      { href: "/dashboard/activities", label: "활동 기록 목록" },
+      { href: "/dashboard/activities/new", label: "활동 기록 작성" },
+    ] },
   { href: "/dashboard/today-memo", label: "한줄기록", icon: PencilLine,
     roles: ["teacher"] },
   { href: "/dashboard/notes", label: "알림장", icon: MessageSquare,
@@ -197,25 +202,54 @@ export function NavChrome({
               const itemQuery = item.href.includes("?")
                 ? new URLSearchParams(item.href.split("?")[1])
                 : new URLSearchParams();
-              const isActive =
-                pathname === itemPath &&
-                Array.from(itemQuery.entries()).every(
-                  ([k, v]) => sp.get(k) === v
-                );
+              const hasChildren = !!item.children?.length;
+              // 하위 메뉴가 있으면 섹션(경로 prefix) 활성 시 펼침
+              const sectionActive =
+                hasChildren && pathname.startsWith(itemPath);
+              const isActive = hasChildren
+                ? sectionActive
+                : pathname === itemPath &&
+                  Array.from(itemQuery.entries()).every(
+                    ([k, v]) => sp.get(k) === v
+                  );
               return (
-                <Link
-                  key={item.href}
-                  href={buildMenuHref(item.href)}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-foreground hover:bg-accent"
+                <div key={item.href}>
+                  <Link
+                    href={buildMenuHref(item.href)}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "text-foreground hover:bg-accent"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </Link>
+                  {hasChildren && sectionActive && (
+                    <div className="ml-7 mt-1 space-y-1">
+                      {item.children!.map((ch) => {
+                        const chPath = ch.href.split("?")[0];
+                        const chActive = pathname === chPath;
+                        return (
+                          <Link
+                            key={ch.href}
+                            href={buildMenuHref(ch.href)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors",
+                              chActive
+                                ? "bg-accent font-medium text-foreground"
+                                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                            )}
+                          >
+                            <span className="h-1 w-1 rounded-full bg-current opacity-60" />
+                            {ch.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
                   )}
-                >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
-                </Link>
+                </div>
               );
             })}
           </nav>
